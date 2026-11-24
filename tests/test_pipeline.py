@@ -188,3 +188,37 @@ def test_reference_without_speech_or_ocr_stops_before_analysis(tmp_path, monkeyp
     with pytest.raises(ValueError, match=r"В этом видеофайле не найдена речь и текст на экране"):
         extractor.extract(reference, tmp_path)
     assert not (tmp_path / "1_extracted.json").exists()
+
+
+def test_writer_rewrites_copied_hook_and_checks_new_version(tmp_path, monkeypatch):
+    copied = "Как сделать ролик из записи экрана"
+    source = copied + " и быстро добавить субтитры."
+    dump(tmp_path / "2_analysis.json", {
+        "core_message": "Субтитры к записи экрана", "hook_mechanism": "Вопрос",
+        "narrative_arc": "Показ процесса", "pacing_and_editing": "Экран",
+        "original_transcript": [{"start": 0.0, "end": 4.0, "text": source}],
+        "topic_supported": True,
+    })
+    dump(tmp_path / "1_extracted.json", {
+        "duration": 4, "words_per_minute": 120, "transcript": [], "screen_text": [],
+    })
+    calls = []
+
+    def generate(prompt, data, schema):
+        calls.append(schema)
+        if schema is scriptwriter.TopicCheck:
+            assert "построчном пересказе" in prompt
+            assert data["draft"]["narration"][0] == "Запись готова? Теперь сделаем речь читаемой."
+            return schema(supported=True, correction="")
+        draft = plan()
+        if len(calls) == 1:
+            draft.scenes[0].spoken_text = copied
+        else:
+            assert "из шести и более слов" in data["revision"]
+            draft.scenes[0].spoken_text = "Запись готова? Теперь сделаем речь читаемой."
+        return draft
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    scriptwriter.write(tmp_path, "studio_dark")
+    assert calls == [ScriptPlan, ScriptPlan, scriptwriter.TopicCheck]
+    assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Запись готова?")
