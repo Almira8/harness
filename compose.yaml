@@ -26,6 +26,7 @@ services:
     volumes:
       - ./data:/data
       - ./workspace:/app/workspace
+      - ./remotion-studio/src:/app/remotion-studio/src:ro
     depends_on:
       db:
         condition: service_healthy

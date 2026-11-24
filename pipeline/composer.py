@@ -1,97 +1,134 @@
-import difflib
-import re
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
+from app.config import ROOT
 from app.media import probe
 from schemas.pipeline import Phrase, ScriptPlan
 from .common import digest, dump, ffmpeg, read, whisper
+from .edit_director import RenderProps, Word, direct
 from .visuals import local_asset
 
-
-def stamp(t):
-    cs = max(0,round(t*100))
-    return f"{cs//360000}:{cs//6000%60:02}:{cs//100%60:02}.{cs%100:02}"
-
-
-def clean(text):
-    return re.sub(r"[{}\\\r\n]", " ", text).strip()
+STUDIO = ROOT / "remotion-studio"
+IMAGE = {".jpg",".jpeg",".png",".webp"}
+VIDEO = {".mov",".mp4",".webm",".m4v"}
 
 
-def scene_times(plan, words, duration):
-    normalize = lambda s: re.sub(r"[^\w]", "", s.casefold())
-    tokens = [s.spoken_text.split() for s in plan.scenes]
-    expected = [normalize(w) for line in tokens for w in line]
-    observed = [normalize(w.text) for w in words]
-    anchors = {0:0.0,len(expected):duration}
-    for block in difflib.SequenceMatcher(None,expected,observed,autojunk=False).get_matching_blocks():
-        for n in range(block.size):
-            if block.a+n:
-                anchors[block.a+n] = words[block.b+n].start
-    times = [0.0]
-    index = 0
-    for line in tokens[:-1]:
-        index += len(line)
-        a = max(i for i in anchors if i<=index)
-        b = min(i for i in anchors if i>=index)
-        times.append(anchors[a] if a==b else anchors[a]+(anchors[b]-anchors[a])*(index-a)/(b-a))
-    return times+[duration]
+def source(directory, name):
+    relative = Path(name)
+    path = (directory / relative).resolve()
+    if relative.is_absolute() or ".." in relative.parts or not path.is_relative_to(directory) or not path.is_file():
+        raise ValueError(f"Нет медиафайла в папке выпуска: {name}")
+    return path
 
 
-def compose(directory):
-    raw = directory/"4_heygen_raw.mp4"
-    plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
-    metadata = probe(raw)
-    video = next(s for s in metadata["streams"] if s["codec_type"]=="video")
-    w,h = video["width"],video["height"]
-    duration = float(metadata["format"]["duration"])
-    cache = directory/("words-"+digest(raw)+".json")
+def words_for(directory, raw, identity):
+    cache = directory / f"words-{identity}.json"
     if not cache.exists():
-        audio = directory/"4_voice.wav"
+        audio = directory / "4_voice.wav"
         ffmpeg("-i",raw,"-vn","-ar",16000,"-ac",1,audio)
-        words = whisper(audio,"word")
-        if not words:
-            raise ValueError("Whisper не вернул пословных таймкодов")
-        dump(cache,[p.model_dump() for p in words])
-    words = [Phrase.model_validate(p) for p in read(cache)]
-    times = scene_times(plan,words,duration)
-    header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {w}
-PlayResY: {h}
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Sub,DejaVu Sans,{round(w*.047)},&H00FFFFFF,&H0000D8FF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,{round(h*.12)},1
-Style: Overlay,DejaVu Sans,{round(w*.043)},&H00FFFFFF,&H00FFFFFF,&H00354D37,&H00354D37,-1,0,0,0,100,100,0,0,3,9,0,8,60,60,{round(h*.09)},1
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    events = []
-    def line(layer,start,end,style,text):
-        events.append(f"Dialogue: {layer},{stamp(start)},{stamp(end)},{style},,0,0,0,,{text}")
-    for i in range(0,len(words),3):
-        group = words[i:i+3]
-        for j,word in enumerate(group):
-            parts = [clean(p.text) for p in group]
-            if plan.subtitle_style=="highlight":
-                parts[j] = r"{\c&H00D8FF&}"+parts[j]+r"{\rSub}"
-            line(1,word.start,word.end,"Sub"," ".join(parts))
-    for scene,start,end in zip(plan.scenes,times,times[1:]):
-        if scene.overlay_text:
-            line(0,start,end,"Overlay",clean(scene.overlay_text))
-    (directory/"5_captions.ass").write_text(header+"\n".join(events)+"\n")
-    fps = 30
-    bumps = [f"max(0,1-abs(on-{round(t*fps)})/8)" for t in times[1:-1]]
-    zoom = "1+0.035*min(1,"+("+".join(bumps) or "0")+")"
-    vf = f"fps={fps},zoompan=z='{zoom}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s={w}x{h}:fps={fps},ass=5_captions.ass"
-    args = ["-i",raw]
+        phrases = whisper(audio,"word")
+        if not phrases:
+            raise ValueError("Whisper не вернул пословные таймкоды")
+        dump(cache,[p.model_dump() for p in phrases])
+    phrases = [Phrase.model_validate(p) for p in read(cache)]
+    return [Word(word=p.text,startSec=p.start,endSec=p.end) for p in phrases]
+
+
+def asset_catalog(directory):
+    catalog = []
+    for p in sorted((directory/"broll").glob("*")):
+        extension = p.suffix.lower()
+        if not p.is_file() or extension not in IMAGE | VIDEO:
+            continue
+        name = p.relative_to(directory).as_posix()
+        entry = {"src":name}
+        path = source(directory,name)
+        if extension in VIDEO:
+            entry["duration"] = float(probe(path)["format"]["duration"])
+        catalog.append(entry)
+    return catalog
+
+
+def validate_cues(props, duration, directory):
+    for layer in (props.zoom_events,props.b_roll,props.callouts):
+        previous = 0
+        for cue in layer:
+            if cue.startSec < previous or cue.endSec > duration + 0.034:
+                raise ValueError("Интервалы монтажа должны идти по порядку внутри ролика")
+            previous = cue.endSec
+    for cue in props.b_roll:
+        path = source(directory,cue.src)
+        if path.suffix.lower() not in VIDEO | IMAGE:
+            raise ValueError("Неизвестный формат B-roll")
+        if path.suffix.lower() in VIDEO and cue.endSec-cue.startSec > float(probe(path)["format"]["duration"])+0.034:
+            raise ValueError(f"Перебивка {cue.src} короче выбранного интервала")
+
+
+def prepare(directory, raw, raw_id, duration):
+    plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
+    words = words_for(directory,raw,raw_id)
+    catalog = asset_catalog(directory)
+    cuts = direct(plan,words,duration,catalog)
+    if any(c.src not in {a["src"] for a in catalog} for c in cuts.b_roll):
+        raise ValueError("EditDirector выбрал отсутствующую перебивку")
+    music = None
     if plan.music.asset:
-        args += ["-stream_loop",-1,"-i",local_asset(plan.music.asset),"-filter_complex",
-                 f"[1:a]volume={plan.music.volume}[m];[0:a][m]amix=inputs=2:duration=first:normalize=0[a]",
-                 "-map","0:v:0","-map","[a]"]
-    else:
-        args += ["-map","0:v:0","-map","0:a:0"]
-    temp = directory/"5_rendering.mp4"
-    ffmpeg(*args,"-vf",vf,"-c:v","libx264","-preset","veryfast","-pix_fmt","yuv420p",
-           "-c:a","aac","-movflags","+faststart",temp,cwd=directory)
+        track = local_asset(plan.music.asset)
+        dest = directory/"music"/track.name
+        dest.parent.mkdir(exist_ok=True)
+        shutil.copy2(track,dest)
+        music = dest.relative_to(directory).as_posix()
+    return RenderProps(**cuts.model_dump(),jobId=directory.name,avatar=raw.name,
+        words=words,music=music,volume=min(plan.music.volume,0.12),accent="#CBFF68",
+        subtitle_style=plan.subtitle_style)
+
+
+def render(directory, props):
+    stage = STUDIO/"public"/"assets"/directory.name
     output = directory/"5_final_output.mp4"
-    temp.replace(output)
+    partial = directory/"5_rendering.mp4"
+    for name in {props.avatar, *(c.src for c in props.b_roll), *([props.music] if props.music else [])}:
+        path = source(directory,name)
+        target = stage / name
+        target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(path,target)
+    cmd = ["npx","--no-install","remotion","render","src/index.ts","MainComposition",str(partial),
+           "--props="+str(directory/"remotion_props.json"),"--concurrency=2","--overwrite"]
+    if browser := os.getenv("REMOTION_BROWSER_EXECUTABLE"):
+        cmd.append("--browser-executable="+browser)
+    proc = subprocess.run(cmd,cwd=STUDIO,capture_output=True,text=True,timeout=1800)
+    if proc.returncode:
+        raise ValueError("Remotion: "+(proc.stdout+"\n"+proc.stderr)[-2200:])
+    probe(partial)
+    partial.replace(output)
+    shutil.rmtree(stage)
     return output
+
+
+def compose(directory, render_only=False):
+    directory = directory.resolve()
+    raw = directory/"4_heygen_raw.mp4"
+    path = directory/"remotion_props.json"
+    manifest = directory/"5_inputs.json"
+    # Explicit step 5 treats manual edits as authoritative, even without a script plan.
+    if render_only and path.exists():
+        props = RenderProps.model_validate(read(path))
+    else:
+        raw_id = digest(raw)
+        inputs = {"raw":raw_id,"script":digest(directory/"3_script_plan.json"),
+                  "broll":[a["src"] for a in asset_catalog(directory)]}
+        if path.exists() and manifest.exists() and read(manifest)==inputs:
+            props = RenderProps.model_validate(read(path))
+        else:
+            duration = float(probe(raw)["format"]["duration"])
+            props = prepare(directory,raw,raw_id,duration)
+            validate_cues(props,duration,directory)
+            dump(path,props.model_dump())
+            dump(manifest,inputs)
+    if props.jobId != directory.name:
+        raise ValueError("jobId в remotion_props.json должен совпадать с папкой выпуска")
+    duration = float(probe(source(directory,props.avatar))["format"]["duration"])
+    validate_cues(props,duration,directory)
+    return render(directory,props)

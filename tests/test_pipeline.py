@@ -3,6 +3,7 @@ import shutil
 from app.config import settings
 from app.media import probe
 from pipeline import composer, scriptwriter, visuals
+from pipeline.edit_director import Callout, EditDirector
 from pipeline.common import dump, ffmpeg, read
 from schemas.pipeline import Phrase, ScriptPlan
 
@@ -29,7 +30,7 @@ def test_writer_receives_only_semantic_fields(tmp_path,monkeypatch):
     assert read(tmp_path/"3_script_plan.json")["scenes"][0]["spoken_text"]=="Первый пример"
 
 
-def test_render_resume_and_real_composition(tmp_path,monkeypatch):
+def test_render_resume_and_cached_director_props(tmp_path,monkeypatch):
     for name in ("heygen_api_key","heygen_voice_id","heygen_avatar_id"):
         monkeypatch.setattr(settings,name,"test-only")
     source = tmp_path/"fixture.mp4"
@@ -53,9 +54,24 @@ def test_render_resume_and_real_composition(tmp_path,monkeypatch):
     assert requests==["POST","GET"]
     monkeypatch.setattr(composer,"whisper",lambda *a: [
         Phrase(start=i*.5,end=(i+1)*.5,text=w) for i,w in enumerate("Первый пример Второй пример".split())])
+    def direct(plan, words, duration, assets):
+        assert words[0].word == "Первый" and words[1].startSec == 0.5
+        return EditDirector(zoom_events=[],b_roll=[],callouts=[
+            Callout(startSec=0,endSec=1,title=plan.scenes[0].overlay_text,subtitle=None)])
+    monkeypatch.setattr(composer,"direct",direct)
+    def render(directory, props):
+        output = directory/"5_final_output.mp4"
+        shutil.copyfile(directory/props.avatar,output)
+        return output
+    monkeypatch.setattr(composer,"render",render)
     final = composer.compose(tmp_path)
-    assert "Новая плашка" in (tmp_path/"5_captions.ass").read_text()
+    props = read(tmp_path/"remotion_props.json")
+    assert props["callouts"][0]["title"] == "Новая плашка"
     assert float(probe(final)["format"]["duration"]) >= 1.9
     monkeypatch.setattr(composer,"whisper",lambda *a:1/0)
-    composer.compose(tmp_path)
+    monkeypatch.setattr(composer,"direct",lambda *a:1/0)
+    props["callouts"][0]["title"] = "Ручная правка"
+    dump(tmp_path/"remotion_props.json",props)
+    composer.compose(tmp_path,render_only=True)
+    assert read(tmp_path/"remotion_props.json") == props
     assert requests==["POST","GET"]

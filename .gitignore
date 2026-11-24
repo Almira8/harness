@@ -8,3 +8,8 @@ renderer/build/
 *.pyc
 .DS_Store
 workspace/
+
+remotion-studio/public/assets/
+remotion-studio/build/
+remotion-studio/out/
+/remotion-studio/node_modules

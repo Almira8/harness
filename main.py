@@ -44,7 +44,7 @@ def main():
             elif step == 4:
                 visuals.render(d,meta["aspect"])
             else:
-                composer.compose(d)
+                composer.compose(d, render_only=start == 5)
 
 
 if __name__ == "__main__":

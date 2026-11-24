@@ -8,6 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 ENV PATH="/opt/venv/bin:$PATH"
+COPY remotion-studio/package*.json remotion-studio/
+RUN cd remotion-studio && npm ci && npx remotion browser ensure
 COPY renderer/package*.json renderer/
 RUN cd renderer && npm ci && npx remotion browser ensure
 COPY . .

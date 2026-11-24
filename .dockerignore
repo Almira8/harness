@@ -6,3 +6,8 @@ renderer/node_modules
 __pycache__
 .pytest_cache
 workspace/
+
+remotion-studio/node_modules
+remotion-studio/public/assets
+remotion-studio/build
+remotion-studio/out
