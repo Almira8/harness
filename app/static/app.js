@@ -35,6 +35,72 @@ function fileLabel(file) {
 el("file").onchange = () => { if (el("file").files.length) el("saved").value = ""; };
 el("saved").onchange = () => { if (el("saved").value) el("file").value = ""; };
 
+function scriptEditor(script) {
+  const form = document.createElement("form");
+  form.id = "script-editor";
+  const heading = addText(form, "h3", "Реплики и обложка");
+  if (!script.cover_hook_text) heading.textContent += " · добавь заголовок";
+  const alternatives = script.alternative_hooks || [];
+  const coverLabel = addText(form, "label", "Текст на обложке / 1-м кадре");
+  const cover = document.createElement("input");
+  cover.name = "cover";
+  cover.required = true;
+  cover.maxLength = 50;
+  cover.value = script.cover_hook_text || "";
+  coverLabel.append(cover);
+  addText(form, "small", "От 4 до 8 слов, до 50 символов.");
+  const narrations = script.scenes.map((scene, index) => {
+    const label = addText(form, "label", "Сцена " + (index + 1) + " · текст ведущей");
+    const input = document.createElement("textarea");
+    input.name = "scene";
+    input.required = true;
+    input.maxLength = 5000;
+    input.value = scene.narration;
+    label.append(input);
+    return input;
+  });
+  if (alternatives.length) {
+    const label = document.createElement("label");
+    label.textContent = "Вариант хука";
+    const selector = document.createElement("select");
+    selector.name = "hook";
+    alternatives.forEach((item, index) =>
+      selector.add(new Option(item.spoken_hook + " · " + item.cover_hook_text, String(index))));
+    selector.value = String(script.selected_hook ?? 0);
+    let opening = alternatives[Number(selector.value)].spoken_hook;
+    selector.onchange = () => {
+      const option = alternatives[Number(selector.value)];
+      const text = narrations[0].value.trim();
+      const rest = text.startsWith(opening) ? text.slice(opening.length).trim() :
+        text.replace(/^.*?(?:[.!?…](?:\s|$)|\n|$)/s, "").trim();
+      narrations[0].value = [option.spoken_hook, rest].filter(Boolean).join(" ");
+      opening = option.spoken_hook;
+      cover.value = option.cover_hook_text;
+    };
+    label.append(selector);
+    form.insertBefore(label, coverLabel);
+  }
+  addText(form, "button", "Сохранить правки");
+  form.onsubmit = event => {
+    event.preventDefault();
+    run(async () => { await saveScriptEditor(); });
+  };
+  return form;
+}
+
+async function saveScriptEditor() {
+  const form = el("script-editor");
+  if (!form) return;
+  if (!form.reportValidity()) throw Error("Проверь текст обложки и реплики.");
+  const fields = new FormData(form);
+  const cover = String(fields.get("cover")).trim();
+  const scenes = fields.getAll("scene").map(text => text.trim());
+  const selectedHook = fields.has("hook") ? Number(fields.get("hook")) : null;
+  if (cover === current.script.cover_hook_text && selectedHook === (current.script.selected_hook ?? null) &&
+      scenes.every((text, index) => text === current.script.scenes[index].narration)) return;
+  await api(route("script-review"), {cover_hook_text: cover, scenes, selected_hook: selectedHook});
+}
+
 async function selectProject(id) {
   const data = await api("projects/" + id);
   current = data;
@@ -43,7 +109,8 @@ async function selectProject(id) {
   const job = data.jobs[0];
   const active = data.jobs.some(j => ["queued","waiting","running","attention"].includes(j.status));
   const scriptJob = data.jobs.find(j => j.kind === "script");
-  el("rewrite").hidden = !scriptJob?.payload.reference_id || data.reference_file?.kind !== "video" || Boolean(data.post_id);
+  el("rewrite").hidden = !(scriptJob?.payload.topic ||
+    (scriptJob?.payload.reference_id && data.reference_file?.kind === "video")) || Boolean(data.post_id);
   el("rewrite").disabled = active;
   el("change-background").hidden = !data.can_change_background ||
     !["video_review", "video_approved"].includes(data.status);
@@ -66,6 +133,11 @@ async function selectProject(id) {
     video.controls = true;
     video.src = "/media/" + data.render_path;
     box.append(video);
+    if (data.cover_path) {
+      const link = addText(box, "a", "Скачать обложку JPG");
+      link.href = "/media/" + data.cover_path;
+      link.download = "5_cover.jpg";
+    }
   }
   if (evidence) {
     const details = document.createElement("details");
@@ -86,6 +158,7 @@ async function selectProject(id) {
     box.append(details);
   }
   if (data.script && data.status !== "script_generating") {
+    if (data.status === "script_review" && data.script.pipeline_job_id) box.append(scriptEditor(data.script));
     if (scriptJob?.status === "completed" && scriptJob.result?.script_strategy === "concept_rewrite") {
       addText(box, "small", "Сценарий заново написан по смыслу референса.");
     }
@@ -160,6 +233,21 @@ on("reference", async () => {
   el("saved").replaceChildren(new Option("Выбрать…",""), ...refs.map(r => new Option(r.file ? fileLabel(r.file) : r.notes,r.id)));
   panel("upload");
 });
+el("creation-mode").onchange = () => {
+  const topic = el("creation-mode").value === "topic";
+  el("uploadForm").hidden = topic;
+  el("topicForm").hidden = !topic;
+};
+on("topicForm", async () => {
+  const topic = el("topic").value.trim();
+  if (!topic) throw Error("Введи тему ролика.");
+  const project = await api("studio/from-topic", {
+    topic, notes: el("topic-notes").value, hook_style: el("hook-style").value,
+  });
+  el("topicForm").reset();
+  panel();
+  await refreshList(project.id);
+}, true);
 on("uploadForm", async () => {
   const file = el("file").files[0];
   let id = el("saved").value;
@@ -201,7 +289,10 @@ async function backgroundSelection(selectId, fileId) {
 on("agree",async () => {
   if (current.status === "edit_review") { await api(route("render"),{}); return; }
   if (current.status === "draft") { await api(route("generate"),{}); return; }
-  if (current.status === "script_review") await api(route("approve-script"),{});
+  if (current.status === "script_review") {
+    await saveScriptEditor();
+    await api(route("approve-script"),{});
+  }
   el("sourceForm").reset();
   el("avatar-background").hidden = false;
   el("background-options").hidden = true;
@@ -251,9 +342,11 @@ on("sourceForm",async () => {
   panel();
 },true);
 on("rewrite", async () => {
-  const referenceId = current.jobs.find(job => job.kind === "script")?.payload.reference_id;
-  const project = await api("studio/from-reference?reference_id=" + encodeURIComponent(referenceId) +
-                            "&brief=" + encodeURIComponent(current.brief), {});
+  const payload = current.jobs.find(job => job.kind === "script")?.payload;
+  const project = payload.topic ? await api("studio/from-topic", {
+    topic: payload.topic, notes: payload.notes, hook_style: payload.hook_style,
+  }) : await api("studio/from-reference?reference_id=" + encodeURIComponent(payload.reference_id) +
+                 "&brief=" + encodeURIComponent(current.brief), {});
   await refreshList(project.id);
 });
 on("revise",async () => { panel("changes"); el("feedback").focus(); });

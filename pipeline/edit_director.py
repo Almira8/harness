@@ -57,7 +57,13 @@ class BackgroundCue(Span):
         return self
 
 
+class CoverHook(Span):
+    startSec: Literal[0] = 0
+    text: str
+
+
 class RenderProps(EditDirector):
+    coverHook: CoverHook | None = None
     jobId: str
     avatar: str
     transparentAvatar: bool = False

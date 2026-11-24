@@ -1,7 +1,7 @@
 import re
 
 from services import background_manager as backgrounds
-from schemas.pipeline import Record, ReferenceAnalysis, ScriptPlan
+from schemas.pipeline import CoverText, HookOption, Record, ReferenceAnalysis, ScriptPlan
 from .common import CONFIG, dump, read, vision
 from .originality import tokens
 
@@ -18,6 +18,8 @@ class SpokenLine(Record):
 
 class SpokenEdit(Record):
     scenes: list[SpokenLine]
+    cover_hook_text: CoverText | None = None
+    alternative_hooks: list[HookOption] | None = None
 
 
 def cliches(text, stop_list):
@@ -42,6 +44,21 @@ def retime_speech(scene, spoken_text):
         previous = end
 
 
+def split_opening(text):
+    opening, separator, rest = text.strip().partition("\n")
+    if separator:
+        return opening.strip(), rest.strip()
+    parts = re.split(r"(?<=[.!?…])\s+", text.strip(), maxsplit=1)
+    return parts[0], parts[1] if len(parts) == 2 else ""
+
+
+def cover_repeats_opening(cover, opening):
+    words = tokens(cover)
+    opening_words = tokens(opening)
+    return bool(words) and any(opening_words[i:i + len(words)] == words
+                               for i in range(len(opening_words) - len(words) + 1))
+
+
 def edit_spoken_text(plan, brand_voice):
     section = brand_voice.partition("## Жёсткий стоп-лист ИИ-клише")[2]
     stop_list = [line[2:].strip() for line in section.split("\n## ", 1)[0].splitlines()
@@ -53,12 +70,20 @@ def edit_spoken_text(plan, brand_voice):
         "Замени книжные и рекламные фразы словами, которые человек произносит без бумажки. "
         "Убирай пустые вступления. Начинай с сути или живой ситуации. "
         "Проверь каждую реплику по стоп-листу. Следуй правилам и ритму заполненных примеров. "
-        "Верни только идентификатор и новую реплику для каждой запрошенной сцены.\n" + brand_voice
+        "Верни идентификатор и новую реплику для каждой запрошенной сцены. "
+        "Отредактируй и cover_hook_text: 4–8 слов, до 50 символов, конкретная боль, риск или выгода. "
+        "Обложка дополняет первую реплику. Не повторяй её дословно и не выдумывай факты. "
+        "Если есть alternative_hooks, сохрани три разных захода и их порядок, отредактируй каждый "
+        "устный хук и соответствующую обложку.\n" + brand_voice
     )
     pending = {scene.scene_id: [] for scene in plan.scenes}
     edited = {}
+    cover = plan.cover_hook_text
+    options = plan.alternative_hooks
+    cover_problem = ""
     for _ in range(2):
-        response = vision(prompt, {"plan": plan.model_dump(), "requested_scenes": pending}, SpokenEdit)
+        response = vision(prompt, {"plan": plan.model_dump(), "requested_scenes": pending,
+                                   "cover_problem": cover_problem}, SpokenEdit)
         ids = [line.scene_id for line in response.scenes]
         if len(ids) != len(pending) or set(ids) != set(pending):
             raise ValueError("Редактор устной речи вернул неполный или неверный набор сцен.")
@@ -70,11 +95,34 @@ def edit_spoken_text(plan, brand_voice):
                 pending[line.scene_id] = matches or ["Пустая реплика"]
             else:
                 edited[line.scene_id] = text
-        if not pending:
+        cover = response.cover_hook_text or cover
+        options = response.alternative_hooks or options
+        first = edited.get(plan.scenes[0].scene_id, plan.scenes[0].spoken_text)
+        cover_problem = ""
+        if cover and (cliches(cover, stop_list) or cover_repeats_opening(cover, split_opening(first)[0])):
+            cover_problem = "Убери клише и дословный повтор первой реплики с обложки."
+        if options:
+            choice = plan.selected_hook if plan.selected_hook is not None else 0
+            if len(options) != 3:
+                cover_problem = "Верни ровно три варианта хука и обложки."
+            else:
+                options[choice] = HookOption(spoken_hook=split_opening(first)[0],
+                                             cover_hook_text=cover or options[choice].cover_hook_text)
+                if (len({tuple(tokens(item.spoken_hook)) for item in options}) != 3
+                        or len({tuple(tokens(item.cover_hook_text)) for item in options}) != 3
+                        or any(cliches(item.spoken_hook, stop_list) or cliches(item.cover_hook_text, stop_list)
+                               or cover_repeats_opening(item.cover_hook_text, item.spoken_hook)
+                               for item in options)):
+                    cover_problem = "Дай три разных хука и три разных обложки без клише и дословных повторов."
+        if not pending and not cover_problem:
             break
+    if cover_problem:
+        raise ValueError(cover_problem)
     if pending:
         problems = "; ".join(f"сцена {scene_id}: {', '.join(matches)}" for scene_id, matches in pending.items())
         raise ValueError(f"Редактор устной речи не устранил штампы: {problems}. Черновик не сохранён.")
+    plan.cover_hook_text = cover
+    plan.alternative_hooks = options
     for scene in plan.scenes:
         scene.spoken_text = edited[scene.scene_id]
         retime_speech(scene, scene.spoken_text)
@@ -84,6 +132,21 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
     analysis = ReferenceAnalysis.model_validate(read(directory / "2_analysis.json"))
     if not (analysis.topic_problem and analysis.core_insight) and not feedback.strip():
         raise ValueError("Тему референса не удалось подтвердить. Открой «Текст из референса» и укажи тему через «Запросить правки».")
+    draft_plan(directory, analysis.model_dump(), bg, brief, feedback, bg_mode=bg_mode, needs_rewrite=needs_rewrite)
+
+
+HOOK_STYLES = {"auto": "Авто", "pain": "Боль и риск", "mistake": "Ошибка",
+               "case": "Личный кейс", "numbers": "Цифры"}
+
+
+def generate_from_topic(topic: str, notes: str = "", hook_style: str = "auto", *,
+                        directory, feedback="", bg="studio_dark"):
+    draft_plan(directory, {"topic": topic, "hook_style": HOOK_STYLES[hook_style]}, bg, notes,
+               feedback, topic_mode=True)
+
+
+def draft_plan(directory, meaning, bg, brief, feedback, *, bg_mode=None,
+               needs_rewrite=None, topic_mode=False):
     brand_voice = (CONFIG / "brand_voice.md").read_text()
     prompt = ("Ты создаёшь оригинальный ролик на основе абстрактной формулы идеи. "
         "Тебе запрещено пересказывать или синонимизировать чужой текст. "
@@ -107,7 +170,19 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
         "Используй надпись из overlay_text. В animation опиши, что появляется, движется или исчезает, "
         "либо оставь пустую строку. Текст вставки белый, движение под новый сценарий. "
         "Различай кадр ведущей и предложенную перебивку; для перебивки назови нужный материал. "
+        "Придумай cover_hook_text: 4–8 слов, максимум 50 символов. "
+        "Конкретная боль, риск или выгода. Без клише, выдуманной срочности и дословного дубля "
+        "первой реплики. Заголовок виден с нулевого кадра. cover_hook_duration_sec=2.5. "
         "По умолчанию music.asset=null.\n" + brand_voice)
+    if topic_mode:
+        prompt += (
+            "\nСоздай сценарий по теме пользователя, без референса. Учитывай hook_style. "
+            "Верни ровно три alternative_hooks: разные spoken_hook (по одному предложению) и "
+            "три разных cover_hook_text. Выбери лучший, запиши его индекс 0–2 в selected_hook. "
+            "Начни первую сцену выбранным spoken_hook, а cover_hook_text возьми из той же пары. "
+            "Все три захода должны естественно переходить к остальной части первой сцены. "
+            "Цифры и личный опыт используй только из брифа или явно обозначь пример как условный."
+        )
     presets = backgrounds.studio_library() if bg_mode == "auto_scene" else backgrounds.library()
     if bg_mode in {"auto_match", "auto_scene", "remotion_greenscreen"}:
         presets.pop("greenscreen", None)
@@ -122,7 +197,7 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
         prompt += "\nИспользуй перечисленные пресеты с правильным типом. Начни с preferred_background."
     if bg_mode != "ai_generate" and bg not in presets:
         raise ValueError(f"Неизвестный пресет --bg: {bg}")
-    data = {"meaning": analysis.model_dump(), "brief": brief, "feedback": feedback,
+    data = {"meaning": meaning, "brief": brief, "feedback": feedback,
             "preferred_background": bg, "presets": presets}
     for _ in range(2):
         plan = vision(prompt, data, ScriptPlan, temperature=0.75)
@@ -133,7 +208,15 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
                 "измени порядок объяснения и перепиши все реплики и надписи с нуля."
             )
             continue
+        if topic_mode:
+            if not plan.alternative_hooks or len(plan.alternative_hooks) != 3 or plan.selected_hook is None:
+                data["revision"] = "Нужны три варианта хука с обложками и индекс выбранной пары."
+                continue
+            plan.cover_hook_text = plan.alternative_hooks[plan.selected_hook].cover_hook_text
         edit_spoken_text(plan, brand_voice)
+        if not plan.cover_hook_text:
+            data["revision"] = "Добавь короткий заголовок обложки cover_hook_text."
+            continue
         if needs_rewrite is not None and needs_rewrite(plan):
             data["revision"] = "После редактуры реплики слишком похожи на исходник. Придумай другой пример и новые реплики."
             continue

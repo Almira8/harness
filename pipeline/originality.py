@@ -45,7 +45,7 @@ def check_draft(directory, previous_narrations=()):
         narration = " ".join(scene.spoken_text for scene in plan.scenes)
         overlays = [scene.overlay_text or "" for scene in plan.scenes]
         overlays.extend(beat.screen_text for scene in plan.scenes for beat in (scene.screen_beats or []))
-        if overlap([narration, plan.title, plan.caption, *overlays], source):
+        if overlap([narration, plan.title, plan.caption, plan.cover_hook_text or "", *overlays], source):
             return True
         words = tokens(narration)
         phrases = ngrams(words)

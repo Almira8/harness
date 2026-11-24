@@ -9,7 +9,7 @@ from app.config import ROOT
 from app.media import probe
 from schemas.pipeline import Phrase, ScriptPlan
 from .common import digest, dump, ffmpeg, read, whisper
-from .edit_director import BackgroundCue, RenderProps, Word, direct
+from .edit_director import BackgroundCue, CoverHook, RenderProps, Word, direct
 from services.background_manager import local_asset
 
 STUDIO = ROOT / "remotion-studio"
@@ -144,10 +144,26 @@ def prepare(directory, raw, raw_id, duration, feedback="", backgrounds=()):
         music = dest.relative_to(directory).as_posix()
     avatar = transparent_avatar(directory, raw, raw_id) if backgrounds else raw
     cues = background_cues(plan.scenes, backgrounds, words, duration) if backgrounds else []
-    return RenderProps(**cuts.model_dump(),jobId=directory.name,avatar=avatar.name,
+    cover = (CoverHook(text=plan.cover_hook_text, endSec=min(duration, plan.cover_hook_duration_sec))
+             if plan.cover_hook_text else None)
+    return RenderProps(**cuts.model_dump(), coverHook=cover,jobId=directory.name,avatar=avatar.name,
         transparentAvatar=bool(backgrounds), backgrounds=cues,
         words=words,music=music,volume=min(plan.music.volume,0.12),accent="#CBFF68",
         subtitle_style=plan.subtitle_style)
+
+
+def extract_cover(video, destination):
+    partial = destination.with_name(destination.stem + "-extracting.jpg")
+    partial.unlink(missing_ok=True)
+    try:
+        for seconds in ("0.200", "0"):
+            ffmpeg("-ss", seconds, "-i", video, "-map", "0:v:0", "-frames:v", 1, "-q:v", 2, partial)
+            if partial.is_file():
+                partial.replace(destination)
+                return
+        raise ValueError("Не удалось извлечь кадр обложки")
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def render(directory, props, props_path=None):
@@ -170,6 +186,7 @@ def render(directory, props, props_path=None):
     streams = {stream["codec_type"] for stream in metadata["streams"]}
     if not {"video", "audio"} <= streams:
         raise ValueError("В финальном MP4 отсутствует видео или звук")
+    extract_cover(partial, directory / "5_cover.jpg")
     partial.replace(output)
     shutil.rmtree(stage)
     return output
@@ -190,7 +207,7 @@ def compose(directory, render_only=False, feedback=""):
         props = RenderProps.model_validate(read(path))
     else:
         raw_id = digest(raw)
-        inputs = {"edit_version":2,"raw":raw_id,"feedback":feedback,"backgrounds":backgrounds,"script":digest(directory/"3_script_plan.json"),
+        inputs = {"edit_version":3,"raw":raw_id,"feedback":feedback,"backgrounds":backgrounds,"script":digest(directory/"3_script_plan.json"),
                   "broll":[[a["src"], digest(source(directory, a["src"]))] for a in asset_catalog(directory)]}
         if path.exists() and manifest.exists() and read(manifest)==inputs:
             props = RenderProps.model_validate(read(path))

@@ -379,3 +379,53 @@ def test_background_swap_keeps_old_video_until_local_render_succeeds(api, monkey
     worker.execute(worker.claim_job())
     result = api.get(f"/api/projects/{identifier}").json()
     assert result["status"] == "video_review" and result["render_path"] == "renders/new.mp4"
+
+
+def test_topic_route_can_choose_hook_and_save_approved_lines(api, monkeypatch, tmp_path):
+    from pipeline import studio
+    from schemas.pipeline import ScriptPlan
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path)
+
+    def prepare(topic, notes, hook_style, *, directory, feedback):
+        assert (topic, notes, hook_style) == ("Субтитры", "Пример на рецепте", "mistake")
+        from pipeline.common import dump
+
+        dump(directory / "3_script_plan.json", ScriptPlan.model_validate({
+            "title": topic, "caption": "", "music": {"asset": None, "volume": 0},
+            "subtitle_style": "minimal", "selected_hook": 0, "cover_hook_text": "Где теряются слова в кадре",
+            "alternative_hooks": [
+                {"spoken_hook": "Смотри на экран.", "cover_hook_text": "Где теряются слова в кадре"},
+                {"spoken_hook": "Ты добавляешь титры вручную?", "cover_hook_text": "Твоя речь пропадает без титров"},
+                {"spoken_hook": "В ролике пропал звук?", "cover_hook_text": "Как сохранить речь без звука"},
+            ],
+            "scenes": [{"scene_id": 1, "spoken_text": "Смотри на экран. Добавим дорожку.",
+                        "camera_framing": "closeup", "background_type": "color",
+                        "background_prompt_or_asset": "studio_dark", "overlay_text": None, "b_roll_query": None}],
+        }).model_dump())
+
+    monkeypatch.setattr(studio.scriptwriter, "generate_from_topic", prepare)
+    monkeypatch.setattr(studio.extractor, "extract", lambda *_: pytest.fail("Extracted a reference"))
+    monkeypatch.setattr(studio.analyzer, "analyze", lambda *_: pytest.fail("Analyzed a reference"))
+    result = api.post("/api/studio/from-topic", json={
+        "topic": "Субтитры", "notes": "Пример на рецепте", "hook_style": "mistake",
+    })
+    identifier = result.json()["id"]
+    worker.execute(worker.claim_job())
+    saved = api.get(f"/api/projects/{identifier}").json()
+    assert saved["jobs"][0]["result"]["script_strategy"] == "topic"
+    assert len(saved["script"]["alternative_hooks"]) == 3
+    response = api.post(f"/api/projects/{identifier}/script-review", json={
+        "cover_hook_text": "Твоя речь пропадает без титров",
+        "scenes": ["Ты добавляешь титры вручную? Добавим дорожку."],
+        "selected_hook": 1,
+    })
+    assert response.status_code == 200
+    assert api.post(f"/api/projects/{identifier}/approve-script").status_code == 200
+    with session() as db:
+        record = db.get(Project, identifier)
+        approved = studio.approved_plan(record, tmp_path / identifier)
+    assert approved.selected_hook == 1
+    assert approved.cover_hook_text == "Твоя речь пропадает без титров"
+    assert approved.scenes[0].spoken_text.startswith("Ты добавляешь титры вручную?")

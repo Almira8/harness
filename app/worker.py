@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from sqlalchemy import and_, or_, select, update
 
-from pipeline import studio
+from pipeline import composer, studio
 from . import agents, providers
 from .config import ROOT, settings
 from .db import Asset, Job, Project, Reference, event, init_db, new_id, now, session
@@ -47,6 +47,9 @@ def render(project, assets, job_id):
     plan = EditPlan.model_validate(project.edit)
     validate_assets(plan, {a.id: a for a in assets})
     props = plan.model_dump()
+    if cover := (project.script or {}).get("cover_hook_text"):
+        props["coverHook"] = {"text": cover, "startSec": 0,
+                              "endSec": project.script.get("cover_hook_duration_sec", 2.5)}
     props["assets"] = {a.id: settings.media_base_url.rstrip("/") + "/media/" + a.path for a in assets}
     props_path = settings.data_dir / "work" / f"{job_id}.json"
     output = settings.data_dir / "renders" / f"{project.id}-{job_id}.mp4"
@@ -61,6 +64,7 @@ def render(project, assets, job_id):
     video = next(stream for stream in metadata["streams"] if stream["codec_type"] == "video")
     if video["width"] != 1080 or video["height"] != 1920:
         raise ValueError("Рендер не прошёл проверку разрешения 1080×1920")
+    composer.extract_cover(output, output.with_suffix(".jpg"))
     return str(output.relative_to(settings.data_dir))
 
 
@@ -82,10 +86,13 @@ def process_job(job_id):
 
         result = None
         reference_id = job.payload.get("reference_id")
-        if reference_id:
+        if topic := job.payload.get("topic"):
+            result = studio.prepare_topic(project, topic, job.payload["notes"], job.payload["hook_style"],
+                                          job.payload.get("feedback", ""))
+        elif reference_id:
             result = studio.prepare(project, reference_id, job.payload.get("feedback", ""), persist_evidence)
         if result is not None:
-            reference_evidence["script_strategy"] = "concept_rewrite"
+            reference_evidence["script_strategy"] = "topic" if job.payload.get("topic") else "concept_rewrite"
         else:
             result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
         with session() as db:

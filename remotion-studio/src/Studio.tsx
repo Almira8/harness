@@ -1,4 +1,5 @@
 import React from 'react';
+import {CoverHookLayer, type CoverHook} from './CoverHookLayer';
 import {BackgroundLayer, type BackgroundCue} from './BackgroundLayer';
 import {getVideoMetadata} from '@remotion/media-utils';
 import {AbsoluteFill, Audio, Composition, Easing, Img, OffthreadVideo, Sequence,
@@ -11,6 +12,7 @@ type Callout = Span & {title: string; subtitle: string | null};
 type Word = Span & {word: string};
 type Props = {
   backgrounds?: BackgroundCue[]; transparentAvatar?: boolean;
+  coverHook?: CoverHook | null;
   jobId: string; avatar: string; zoom_events: Zoom[]; b_roll: Insert[];
   callouts: Callout[]; words: Word[]; music: string | null; volume: number;
   accent: string; subtitle_style: 'highlight' | 'minimal';
@@ -107,10 +109,17 @@ export function AudioLayer(p: Props) {
 }
 
 function MainComposition(p: Props) {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const coverVisible = p.coverHook && frame < Math.max(1, Math.round(p.coverHook.endSec * fps));
   return <AbsoluteFill style={{background:'#101816',fontFamily:'DejaVu Sans, sans-serif'}}>
     <BackgroundLayer cues={p.backgrounds ?? []} jobId={p.jobId}/>
-    <BaseAvatarLayer {...p}/><BRollOverlayLayer {...p}/><TitleCalloutLayer {...p}/>
+    <BaseAvatarLayer {...p}/>
+    <AbsoluteFill style={{visibility: coverVisible ? 'hidden' : 'visible'}}>
+      <BRollOverlayLayer {...p}/><TitleCalloutLayer {...p}/>
+    </AbsoluteFill>
     <KaraokeSubtitlesLayer {...p}/><AudioLayer {...p}/>
+    {coverVisible && p.coverHook && <CoverHookLayer text={p.coverHook.text}/>}
   </AbsoluteFill>;
 }
 

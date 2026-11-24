@@ -15,7 +15,7 @@ def plan():
              "overlay_text": "Пример", "b_roll_query": None}
     return ScriptPlan.model_validate({"title":"Проверка", "caption":"Описание",
         "scenes":[scene, dict(scene, scene_id=2, spoken_text="Второй пример", camera_framing="half_body")],
-        "subtitle_style":"highlight","music":{"asset":None,"volume":0.1}})
+        "subtitle_style":"highlight","music":{"asset":None,"volume":0.1}, "cover_hook_text":"Где теряется время на монтаже"})
 
 
 def unchanged_spoken_edit(data):
@@ -306,3 +306,37 @@ def test_spoken_editor_retries_only_scene_with_cliche_and_preserves_visuals(monk
         for beat in (before["screen_beats"] or []) + (after["screen_beats"] or []):
             beat.pop("speech")
     assert edited == original
+
+
+def test_topic_plan_uses_selected_cover_and_humanized_opening(tmp_path, monkeypatch):
+    from schemas.pipeline import HookOption
+
+    draft = plan()
+    draft.scenes[0].spoken_text = "Сложно разобрать слова? Попробуй отдельную дорожку."
+    draft.selected_hook = 1
+    draft.alternative_hooks = [
+        HookOption(spoken_hook="Смотри на шкалу.", cover_hook_text="Где теряются важные слова"),
+        HookOption(spoken_hook="Сложно разобрать слова?", cover_hook_text="Как спасти тихую дорожку"),
+        HookOption(spoken_hook="Титры снова опаздывают?", cover_hook_text="Почему текст приходит слишком поздно"),
+    ]
+
+    def generate(prompt, data, schema, **kwargs):
+        if schema is ScriptPlan:
+            assert data["meaning"] == {"topic": "Монтаж", "hook_style": "Ошибка"}
+            return draft
+        if schema is scriptwriter.SpokenEdit:
+            return schema(scenes=[
+                scriptwriter.SpokenLine(scene_id=1, spoken_text="Речь еле слышно? Вынеси голос на отдельную дорожку."),
+                scriptwriter.SpokenLine(scene_id=2, spoken_text="Теперь прибавь громкость."),
+            ], cover_hook_text="Как спасти тихую дорожку")
+        assert data["draft"]["scenes"][0]["spoken_text"].startswith("Речь еле слышно?")
+        return schema(supported=True, correction="")
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    scriptwriter.generate_from_topic("Монтаж", hook_style="mistake", directory=tmp_path)
+    saved = read(tmp_path / "3_script_plan.json")
+    assert saved["selected_hook"] == 1
+    assert saved["alternative_hooks"][1]["spoken_hook"] == "Речь еле слышно?"
+    assert saved["alternative_hooks"][1]["cover_hook_text"] == saved["cover_hook_text"]
+    assert saved["cover_hook_duration_sec"] == 2.5
+    assert not (tmp_path / "1_extracted.json").exists()

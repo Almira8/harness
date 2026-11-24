@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 class Record(BaseModel):
@@ -79,12 +79,31 @@ class Music(Record):
     volume: float = Field(ge=0, le=1)
 
 
+def validate_cover_text(text):
+    if not 4 <= len(text.split()) <= 8:
+        raise ValueError("Заголовок обложки должен содержать от 4 до 8 слов")
+    return text
+
+
+CoverText = Annotated[str, Field(min_length=1, max_length=50), AfterValidator(validate_cover_text)]
+HookStyle = Literal["auto", "pain", "mistake", "case", "numbers"]
+
+
+class HookOption(Record):
+    spoken_hook: str = Field(min_length=1, max_length=180)
+    cover_hook_text: CoverText
+
+
 class ScriptPlan(Record):
     title: str
     caption: str
     scenes: list[SceneItem] = Field(min_length=1, max_length=50)
     music: Music
     subtitle_style: Literal["highlight", "minimal"]
+    cover_hook_text: CoverText | None = None
+    cover_hook_duration_sec: float = Field(default_factory=lambda: 2.5, ge=0.25, le=10)
+    alternative_hooks: list[HookOption] | None = None
+    selected_hook: int | None = Field(default=None, ge=0, le=2)
 
     @model_validator(mode="after")
     def unique_scenes(self):

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from . import analyzer, composer, extractor, scriptwriter, visuals
 from .common import dump, read, workspace
 from .originality import check_draft
-from schemas.pipeline import ScriptPlan
+from schemas.pipeline import HookOption, ScriptPlan
 from services import background_manager as backgrounds
 
 
@@ -49,6 +49,17 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback,
                            needs_rewrite=check_draft(directory, previous_narrations))
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
+    return review_script(project.id, plan)
+
+
+def prepare_topic(project, topic, notes, hook_style, feedback=""):
+    with workspace(project.id) as directory:
+        scriptwriter.generate_from_topic(topic, notes, hook_style, directory=directory, feedback=feedback)
+        plan = ScriptPlan.model_validate(read(directory / "3_script_plan.json"))
+    return review_script(project.id, plan)
+
+
+def review_script(project_id, plan):
     scenes, seconds = [], []
     for scene in plan.scenes:
         start = len(seconds)
@@ -72,7 +83,10 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
             "screen_text":scene.overlay_text or "", "graphic":scene.b_roll_query or "",
             "layout":"presenter","animation":"fade","filming":scene.camera_framing,"materials":[]})
     return {"title":plan.title,"caption":plan.caption,"duration":len(seconds),"scenes":scenes,
-            "seconds":seconds,"pipeline_job_id":project.id}
+            "seconds":seconds,"pipeline_job_id":project_id,
+            "cover_hook_text": plan.cover_hook_text, "cover_hook_duration_sec": plan.cover_hook_duration_sec,
+            "alternative_hooks": [item.model_dump() for item in (plan.alternative_hooks or [])],
+            "selected_hook": plan.selected_hook}
 
 
 def available_backgrounds(db):
@@ -92,6 +106,8 @@ def production_plan(project):
     return ScriptPlan.model_validate({
         "title": project.script["title"], "caption": project.script.get("caption", ""),
         "music": {"asset": None, "volume": 0}, "subtitle_style": "highlight",
+        "cover_hook_text": project.script.get("cover_hook_text"),
+        "cover_hook_duration_sec": project.script.get("cover_hook_duration_sec", 2.5),
         "scenes": [
             {"scene_id": index, "spoken_text": scene["narration"],
              "camera_framing": "closeup" if scene.get("filming") == "closeup" else "half_body",
@@ -102,17 +118,59 @@ def production_plan(project):
     })
 
 
+def approved_plan(project, directory):
+    path = directory / "3_script_plan.json"
+    saved = project.script or {}
+    if not path.is_file() or not saved.get("pipeline_job_id"):
+        return production_plan(project)
+    plan = ScriptPlan.model_validate(read(path))
+    for scene, snapshot in zip(plan.scenes, saved["scenes"], strict=True):
+        narration = snapshot["narration"]
+        if scene.spoken_text != narration:
+            scriptwriter.retime_speech(scene, narration)
+            scene.spoken_text = narration
+    for field in ("cover_hook_text", "cover_hook_duration_sec", "selected_hook", "alternative_hooks"):
+        if field in saved:
+            plan = ScriptPlan.model_validate({**plan.model_dump(), field: saved[field]})
+    return plan
+
+
+def edit_for_review(project, cover, narrations, selected_hook):
+    with workspace(project.id) as directory:
+        plan = approved_plan(project, directory)
+        if len(narrations) != len(plan.scenes):
+            raise ValueError("Число реплик должно совпадать с числом сцен")
+        options = plan.alternative_hooks or []
+        if selected_hook is not None and selected_hook >= len(options):
+            raise ValueError("Такого варианта хука нет")
+        opening, _ = scriptwriter.split_opening(narrations[0])
+        if scriptwriter.cover_repeats_opening(cover, opening):
+            raise ValueError("Заголовок обложки повторяет первую реплику. Сформулируй его иначе.")
+        for scene, narration in zip(plan.scenes, narrations, strict=True):
+            scriptwriter.retime_speech(scene, narration)
+            scene.spoken_text = narration
+        plan.cover_hook_text = cover
+        plan.selected_hook = selected_hook
+        if selected_hook is not None:
+            options[selected_hook] = HookOption(spoken_hook=opening[:180], cover_hook_text=cover)
+        return review_script(project.id, plan)
+
+
+def publish_cover(directory, output):
+    cover = directory / "5_cover.jpg"
+    if cover.exists():
+        shutil.copyfile(cover, (settings.data_dir / output).with_suffix(".jpg"))
+
+
 def produce(project, job_id, bg_mode=None, bg="default_studio"):
     with workspace(project.id) as directory:
         presets = None
-        if bg_mode:
-            with session() as db:
-                presets = available_backgrounds(db)
-            plan_path = directory / "3_script_plan.json"
-            if plan_path.is_file() and (project.script or {}).get("pipeline_job_id"):
-                plan = ScriptPlan.model_validate(read(plan_path))
-            else:
-                plan = production_plan(project)
+        plan_path = directory / "3_script_plan.json"
+        if bg_mode or (project.script or {}).get("pipeline_job_id"):
+            plan = approved_plan(project, directory)
+            if bg_mode:
+                with session() as db:
+                    presets = available_backgrounds(db)
             if bg_mode == "auto_scene":
                 choices = directory / f"backgrounds-{job_id}.json"
                 if choices.is_file():
@@ -127,6 +185,7 @@ def produce(project, job_id, bg_mode=None, bg="default_studio"):
         output = f"renders/{job_id}.mp4"
         shutil.copyfile(raw, settings.data_dir/raw_path)
         shutil.copyfile(final, settings.data_dir/output)
+        publish_cover(directory, output)
     return raw_path,output
 
 
@@ -138,6 +197,7 @@ def change_background(project, job_id, preset):
         final = composer.replace_background(directory, plate)
         output = f"renders/{job_id}.mp4"
         shutil.copyfile(final, settings.data_dir / output)
+        publish_cover(directory, output)
     return output
 
 
@@ -157,4 +217,5 @@ def revise_edit(project, job_id, assets, feedback):
         final = composer.compose(directory, feedback=feedback)
         output = f"renders/{job_id}.mp4"
         shutil.copyfile(final, settings.data_dir / output)
+        publish_cover(directory, output)
     return output

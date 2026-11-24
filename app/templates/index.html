@@ -1,8 +1,24 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>alylabb · Reels Studio</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
 <body><main><header><strong>alylabb</strong> / Reels Studio</header><h1>Моя студия Reels</h1>
-<nav aria-label="Работа с выпуском"><button id="reference">Референс</button><button id="agree" disabled>Согласовать</button><button id="revise" disabled>Правки</button><button id="rewrite" hidden>Написать заново</button><button id="approve" disabled>Утвердить</button><button id="change-background" hidden>Поменять фон</button><button id="queue">Очередь</button></nav>
+<nav aria-label="Работа с выпуском"><button id="reference">Новый выпуск</button><button id="agree" disabled>Согласовать</button><button id="revise" disabled>Правки</button><button id="rewrite" hidden>Написать заново</button><button id="approve" disabled>Утвердить</button><button id="change-background" hidden>Поменять фон</button><button id="queue">Очередь</button></nav>
 <p id="notice" role="status"></p>
-<section id="upload" hidden><h2>Референс</h2><form id="uploadForm"><label>Видео или изображение<input id="file" type="file" accept=".jpeg,.jpg,.mov,.mp4"></label><label>Или ранее загруженный референс<select id="saved"></select></label><label>Что сохранить в ролике<textarea id="notes" placeholder="Тема, подача, локация"></textarea></label><button>Подготовить сценарий</button></form></section>
+<section id="upload" hidden><h2>Новый выпуск</h2>
+<label>Режим<select id="creation-mode">
+  <option value="reference">Из референса (видео)</option>
+  <option value="topic">По своей теме</option>
+</select></label>
+<form id="uploadForm"><label>Видео или изображение<input id="file" type="file" accept=".jpeg,.jpg,.mov,.mp4"></label><label>Или ранее загруженный референс<select id="saved"></select></label><label>Что сохранить в ролике<textarea id="notes" placeholder="Тема, подача, локация"></textarea></label><button>Подготовить сценарий</button></form>
+<form id="topicForm" hidden>
+  <label>Тема ролика<input id="topic" required maxlength="200"></label>
+  <label>Ключевые мысли / детали<textarea id="topic-notes" maxlength="10000"></textarea></label>
+  <label>Стиль хука<select id="hook-style">
+    <option value="auto">Авто</option><option value="pain">Боль и риск</option>
+    <option value="mistake">Ошибка</option><option value="case">Личный кейс</option>
+    <option value="numbers">Цифры</option>
+  </select></label>
+  <button>Подготовить сценарий</button>
+</form>
+</section>
 <section id="lineup" hidden><h2>Очередь публикаций</h2><div id="slots"></div></section>
 <label id="picker" hidden>Выпуск<select id="projects"></select></label>
 <article><small id="reference-file"></small><p id="state"></p><h2 id="title"></h2><div id="preview"></div></article>

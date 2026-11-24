@@ -7,3 +7,6 @@
 .storyboard dd { margin: 0; overflow-wrap: anywhere; }
 #preview details + details { margin-top: 1rem; }
 @media (max-width: 550px) { .storyboard li { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; } }
+
+#script-editor { border-bottom: 1px solid #dce5de; padding-bottom: 1rem; margin-bottom: 1rem; }
+#preview video + a { display: block; margin: 0.5rem 0; color: inherit; }

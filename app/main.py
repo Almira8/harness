@@ -17,7 +17,7 @@ from .db import Asset, Event, Job, Project, Reference, event, init_db, new_id, s
 from .media import probe
 from .providers import public_url
 from .schemas import (BackgroundInput, CreateProject, EditInput, EditPlan, GenerateClip, GenerateInput, ProductionInput,
-                      ReferenceInput, ScheduleInput, Script, validate_assets)
+                      ReferenceInput, ScheduleInput, Script, ScriptReviewInput, TopicInput, validate_assets)
 
 ACTIVE = ("queued", "running", "waiting", "attention")
 
@@ -119,6 +119,21 @@ def publication_queue():
         return sorted(queue, key=lambda item: datetime.fromisoformat(item["publication_at"]))
 
 
+@app.post("/api/studio/from-topic")
+def start_from_topic(body: TopicInput):
+    if not settings.openai_api_key:
+        raise HTTPException(422, "Для сценария заполните OPENAI_API_KEY")
+    topic = body.topic.strip()
+    if not topic:
+        raise HTTPException(422, "Введи тему ролика")
+    with session() as db:
+        project = Project(title=topic, brief=body.notes, status="script_generating")
+        db.add(project)
+        db.flush()
+        enqueue(db, project, "script", {**body.model_dump(), "topic": topic})
+        return serialize(project)
+
+
 @app.post("/api/studio/from-reference")
 def start_from_reference(reference_id: str, brief: str = ""):
     if not settings.openai_api_key:
@@ -156,7 +171,10 @@ def get_project(project_id: str):
         ref_id = script_job.payload.get("reference_id") if script_job else None
         ref = db.get(Reference, ref_id) if ref_id else None
         source = source_info(db.get(Asset, ref.asset_id)) if ref and ref.asset_id else None
-        return {**serialize(project), "reference_file": source, "can_change_background": studio.can_swap_background(project),
+        cover_path = str(Path(project.render_path).with_suffix(".jpg")) if project.render_path else None
+        if cover_path and not (settings.data_dir / cover_path).is_file():
+            cover_path = None
+        return {**serialize(project), "reference_file": source, "cover_path": cover_path, "can_change_background": studio.can_swap_background(project),
                 "assets": [serialize(a) for a in db.scalars(select(Asset).where(Asset.project_id == project_id)).all()],
                 "jobs": [serialize(j) for j in jobs],
                 "events": [serialize(e) for e in db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(50)).all()]}
@@ -177,6 +195,8 @@ def generate(project_id: str, body: GenerateInput):
         payload = body.model_dump()
         previous = db.scalar(select(Job).where(Job.project_id == project.id, Job.kind == "script")
                              .order_by(Job.created_at.desc()).limit(1))
+        if previous and previous.payload.get("topic") and not body.reference_id:
+            payload.update({key: previous.payload[key] for key in ("topic", "notes", "hook_style")})
         if previous and previous.payload.get("pipeline") and body.reference_id:
             payload["pipeline"] = True
         result = enqueue(db, project, "script", payload)
@@ -198,6 +218,25 @@ def save_script(project_id: str, body: Script):
             event(db, project.id, "script_version", script=project.script)
         project.script, project.status = body.model_dump(), "script_review"
         project.mode, project.edit, project.render_path = None, None, None
+        return serialize(project)
+
+
+@app.post("/api/projects/{project_id}/script-review")
+def review_script(project_id: str, body: ScriptReviewInput):
+    with session() as db:
+        project = project_or_404(db, project_id)
+        require_idle(db, project.id)
+        if project.status != "script_review" or not (project.script or {}).get("pipeline_job_id"):
+            raise HTTPException(409, "Дождись нового сценария для редактирования")
+        narrations = [text.strip() for text in body.scenes]
+        if any(not text or len(text) > 5000 for text in narrations):
+            raise HTTPException(422, "Каждой сцене нужна реплика длиной до 5000 символов")
+        try:
+            updated = studio.edit_for_review(project, body.cover_hook_text, narrations, body.selected_hook)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        event(db, project.id, "script_version", script=project.script)
+        project.script = updated
         return serialize(project)
 
 

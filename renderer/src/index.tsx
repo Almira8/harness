@@ -1,4 +1,5 @@
 import React from "react";
+import { CoverHookLayer, type CoverHook } from "../../remotion-studio/src/CoverHookLayer";
 import { Video } from "@remotion/media";
 import {
   AbsoluteFill,
@@ -30,6 +31,7 @@ type Overlay = {
 
 type Caption = { start: number; end: number; text: string };
 type Props = {
+  coverHook?: CoverHook | null;
   duration: number;
   clips: Clip[];
   overlays: Overlay[];
@@ -175,8 +177,10 @@ export const Reel: React.FC<Props> = ({
   overlays,
   captions,
   assets,
+  coverHook,
 }) => {
   const { fps } = useVideoConfig();
+  const frame = useCurrentFrame();
   return (
     <AbsoluteFill
       style={{ background: "#f6f5ef", fontFamily: "Arial, sans-serif" }}
@@ -220,6 +224,8 @@ export const Reel: React.FC<Props> = ({
           <Subtitle text={caption.text} />
         </Sequence>
       ))}
+      {coverHook && frame < Math.max(1, Math.round(coverHook.endSec * fps)) &&
+        <CoverHookLayer text={coverHook.text} />}
     </AbsoluteFill>
   );
 };
