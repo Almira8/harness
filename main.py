@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from pipeline import analyzer, composer, extractor, scriptwriter, visuals
 from pipeline.common import dump, read, workspace
+from pipeline.originality import check_draft
 from services.background_manager import MODES
 
 
@@ -52,7 +53,10 @@ def main():
                 if start == 3 and not args.only_step and (d/"3_script_plan.json").exists():
                     print("Используется сохранённый сценарий")
                 else:
-                    scriptwriter.write(d, meta["bg"], bg_mode=meta.get("bg_mode"))
+                    if analyzer.needs_analysis(d):
+                        analyzer.analyze(d)
+                    scriptwriter.write(d, meta["bg"], bg_mode=meta.get("bg_mode"),
+                                       needs_rewrite=check_draft(d))
             elif step == 4:
                 visuals.render(d, meta["aspect"], bg_mode=meta.get("bg_mode"), bg=meta["bg"])
             else:

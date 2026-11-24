@@ -6,6 +6,7 @@ from app.db import Asset, Job, Reference, session
 from sqlalchemy import select
 from . import analyzer, composer, extractor, scriptwriter, visuals
 from .common import dump, read, workspace
+from .originality import check_draft
 from schemas.pipeline import ScriptPlan
 
 
@@ -37,15 +38,15 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         extracted = read(directory/"1_extracted.json")
         evidence = {key: extracted[key] for key in ("transcript", "screen_text", "ocr_warning")}
         on_evidence(evidence)
-        if not (directory/"2_analysis.json").exists() or meta.get("semantic_analysis_version") != 1:
+        if analyzer.needs_analysis(directory) or meta.get("semantic_analysis_version") != analyzer.ANALYSIS_VERSION:
             analyzer.analyze(directory)
             meta = read(identity)
-            dump(identity, {**meta, "semantic_analysis_version": 1})
+            dump(identity, {**meta, "semantic_analysis_version": analyzer.ANALYSIS_VERSION})
         analysis = read(directory/"2_analysis.json")
-        on_evidence({**evidence, "topic": analysis["core_message"],
-                     "topic_supported": analysis.get("topic_supported")})
+        on_evidence({**evidence, "topic": analysis["core_insight"],
+                     "topic_supported": bool(analysis["topic_problem"] and analysis["core_insight"])})
         scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback,
-                           previous_narrations=previous_narrations)
+                           needs_rewrite=check_draft(directory, previous_narrations))
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     scenes, seconds = [], []
     for scene in plan.scenes:

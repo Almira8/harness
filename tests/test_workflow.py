@@ -294,7 +294,8 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
         dump(directory / "1_extracted.json", {"transcript": [], "screen_text": [], "ocr_warning": None})
 
     def analyze(directory):
-        dump(directory / "2_analysis.json", {"core_message": "Субтитры", "topic_supported": True})
+        dump(directory / "2_analysis.json", {"topic_problem": "Речь трудно разобрать", "core_insight": "Субтитры",
+             "hook_formula": "Вопрос", "narrative_formula": "Проблема → решение", "visual_rhythm": "Перебивка"})
 
     def write(directory, *args, **kwargs):
         dump(directory / "3_script_plan.json", {

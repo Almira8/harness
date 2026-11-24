@@ -10,6 +10,8 @@ import wave
 from contextlib import contextmanager
 from pathlib import Path
 
+from openai import BadRequestError
+
 from app.config import ROOT, settings
 from app.agents import client
 from schemas.pipeline import Phrase
@@ -54,13 +56,21 @@ def ffmpeg(*args, cwd=None):
     return result.stderr.decode(errors="replace")
 
 
-def vision(prompt, data, schema, images=()):
+def vision(prompt, data, schema, images=(), *, temperature=None):
     content = [{"type": "input_text", "text": json.dumps(data, ensure_ascii=False)}]
     for path in images:
         content.append({"type": "input_image", "image_url": "data:image/jpeg;base64," +
                         base64.b64encode(path.read_bytes()).decode(), "detail": "high"})
-    response = client().responses.parse(model=settings.openai_model, text_format=schema, input=[
-        {"role": "developer", "content": prompt}, {"role": "user", "content": content}])
+    messages = [{"role": "developer", "content": prompt}, {"role": "user", "content": content}]
+    api = client()
+    sampling = {"temperature": temperature} if temperature is not None else {}
+    try:
+        response = api.responses.parse(model=settings.openai_model, text_format=schema, input=messages, **sampling)
+    except BadRequestError as error:
+        if not sampling or error.param != "temperature":
+            raise
+        # Reasoning models can accept only their default sampling parameters.
+        response = api.responses.parse(model=settings.openai_model, text_format=schema, input=messages)
     if response.status != "completed" or response.output_parsed is None:
         raise ValueError("Модель не завершила ответ")
     return response.output_parsed

@@ -2,7 +2,8 @@ import shutil
 
 from app.config import settings
 from app.media import probe
-from pipeline import composer, scriptwriter, visuals
+from pipeline import composer, originality, scriptwriter, visuals
+from schemas.pipeline import ReferenceAnalysis
 from pipeline.edit_director import Callout, EditDirector
 from pipeline.common import dump, ffmpeg, read
 from schemas.pipeline import Phrase, ScreenText, ScriptPlan
@@ -17,17 +18,31 @@ def plan():
         "subtitle_style":"highlight","music":{"asset":None,"volume":0.1}})
 
 
-def test_writer_receives_only_semantic_fields(tmp_path,monkeypatch):
-    dump(tmp_path/"2_analysis.json", {"core_message":"Смысл","hook_mechanism":"Вопрос",
-        "narrative_arc":"Демонстрация","pacing_and_editing":"Две склейки",
-        "original_transcript":[{"start":0.0,"end":1.0,"text":"verbatim-source"}]})
-    def generate(prompt,data,schema):
-        assert "original_transcript" not in data["meaning"]
-        assert "verbatim-source" not in str(data)
+def idea():
+    return {"topic_problem": "Зрителю трудно разобраться в редакторе.",
+            "core_insight": "Раздельные дорожки делают процесс управляемым.",
+            "hook_formula": "Вопрос о результате", "narrative_formula": "Проблема → решение → пример",
+            "visual_rhythm": "Перебивка на демонстрации"}
+
+
+def test_writer_receives_only_semantic_fields(tmp_path, monkeypatch):
+    dump(tmp_path / "2_analysis.json", idea())
+    dump(tmp_path / "1_extracted.json", {"transcript": [{"text": "verbatim-source"}]})
+    dump(tmp_path / "3_script_plan.json", {"previous": "old-phrasing"})
+
+    def generate(prompt, data, schema, **kwargs):
+        assert data["meaning"] == idea()
+        assert "verbatim-source" not in str(data) and "old-phrasing" not in str(data)
+        if schema is scriptwriter.TopicCheck:
+            return schema(supported=True, correction="")
+        assert kwargs["temperature"] == 0.75
+        assert "новый жизненный пример" in prompt
         return plan()
-    monkeypatch.setattr(scriptwriter,"vision",generate)
-    scriptwriter.write(tmp_path,"studio_dark")
-    assert read(tmp_path/"3_script_plan.json")["scenes"][0]["spoken_text"]=="Первый пример"
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    scriptwriter.write(tmp_path, "studio_dark", feedback="Сделай объяснение короче.",
+                       needs_rewrite=originality.check_draft(tmp_path))
+    assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"] == "Первый пример"
 
 
 def test_render_resume_and_cached_director_props(tmp_path,monkeypatch):
@@ -93,13 +108,12 @@ def test_silent_reference_sends_ordered_individual_frames(tmp_path, monkeypatch)
         assert len(images) == len(times) and all(image.is_file() for image in images)
         assert not data["transcript"]
         assert "опирайся ТОЛЬКО на текст с кадров" in prompt
-        return schema(core_message="Показ интерфейса", hook_mechanism="Действие",
-                      narrative_arc="Демонстрация", pacing_and_editing="Без речи",
-                      original_transcript=[])
+        assert schema is ReferenceAnalysis
+        return schema(**idea())
 
     monkeypatch.setattr(analyzer, "vision", vision)
     analyzer.analyze(tmp_path)
-    assert read(tmp_path / "2_analysis.json")["core_message"] == "Показ интерфейса"
+    assert read(tmp_path / "2_analysis.json") == idea()
 
 
 def test_studio_heygen_uses_configured_engine_and_keeps_remote_id(tmp_path, monkeypatch):
@@ -146,32 +160,23 @@ def test_director_cues_fit_timeline_and_available_assets():
     ]
 
 
-def test_screen_evidence_rejects_unrelated_script(tmp_path, monkeypatch):
-    dump(tmp_path / "2_analysis.json", {
-        "core_message": "Монтаж Reels", "hook_mechanism": "Титр", "narrative_arc": "Инструкция",
-        "pacing_and_editing": "Запись экрана", "original_transcript": [], "topic_supported": True,
-    })
-    dump(tmp_path / "1_extracted.json", {
-        "duration": 47, "words_per_minute": 0, "transcript": [],
-        "screen_text": [{"time": 0.0, "text": "Как монтировать Reels с ИИ"}],
-    })
-    calls = []
-
-    def generate(prompt, data, schema):
-        calls.append(schema)
-        if schema is ScriptPlan:
-            assert "screen_text" not in data and "speech" not in data
-            assert "Верни тему монтажа Reels." not in str(data)
-            return plan()
-        assert data["screen_text"][0]["text"] == "Как монтировать Reels с ИИ"
-        return schema(supported=False, correction="Верни тему монтажа Reels.")
-
-    monkeypatch.setattr(scriptwriter, "vision", generate)
+def test_abstract_idea_review_rejects_unrelated_script(tmp_path, monkeypatch):
     import pytest
 
-    with pytest.raises(ValueError, match="Не удалось написать сценарий"):
+    dump(tmp_path / "2_analysis.json", idea())
+    calls = []
+
+    def generate(prompt, data, schema, **kwargs):
+        calls.append(schema)
+        if schema is ScriptPlan:
+            assert "Подменённая идея" not in str(data)
+            return plan()
+        return schema(supported=False, correction="Подменённая идея")
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    with pytest.raises(ValueError, match="Черновик не сохранён"):
         scriptwriter.write(tmp_path, "studio_dark")
-    assert calls == [ScriptPlan, scriptwriter.TopicCheck] * 3
+    assert calls == [ScriptPlan, scriptwriter.TopicCheck] * 2
     assert not (tmp_path / "3_script_plan.json").exists()
 
 
@@ -192,80 +197,49 @@ def test_reference_without_speech_or_ocr_stops_before_analysis(tmp_path, monkeyp
     assert not (tmp_path / "1_extracted.json").exists()
 
 
-def test_writer_rewrites_copied_hook_and_checks_new_version(tmp_path, monkeypatch):
-    copied = "Как сделать ролик из записи экрана"
-    source = copied + " и быстро добавить субтитры."
-    dump(tmp_path / "2_analysis.json", {
-        "core_message": "Субтитры к записи экрана", "hook_mechanism": "Вопрос",
-        "narrative_arc": "Показ процесса", "pacing_and_editing": "Экран",
-        "original_transcript": [{"start": 0.0, "end": 4.0, "text": source}],
-        "topic_supported": True,
-    })
-    dump(tmp_path / "1_extracted.json", {
-        "duration": 4, "words_per_minute": 120, "transcript": [], "screen_text": [],
-    })
-    calls = []
+def test_writer_retries_only_once_for_copied_trigram(tmp_path, monkeypatch):
+    import pytest
 
-    def generate(prompt, data, schema):
-        calls.append(schema)
-        if schema is scriptwriter.TopicCheck:
-            assert "построчном пересказе" in prompt
-            assert data["draft"]["narration"][0] == "Запись готова? Теперь сделаем речь читаемой."
-            return schema(supported=True, correction="")
+    dump(tmp_path / "2_analysis.json", idea())
+    dump(tmp_path / "1_extracted.json", {
+        "transcript": [{"text": "Убираем паузы вручную и обозначаем громкие участки отдельным цветом"}],
+    })
+    attempts = []
+
+    def generate(prompt, data, schema, **kwargs):
+        assert schema is ScriptPlan
+        assert "Убираем паузы вручную" not in str(data)
+        attempts.append(data.get("revision"))
         draft = plan()
-        if len(calls) == 1:
-            draft.scenes[0].spoken_text = copied
-        else:
-            assert "из шести и более слов" in data["revision"]
-            draft.scenes[0].spoken_text = "Запись готова? Теперь сделаем речь читаемой."
+        draft.scenes[0].spoken_text = "Убираем паузы вручную."
         return draft
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
-    scriptwriter.write(tmp_path, "studio_dark")
-    assert calls == [ScriptPlan, ScriptPlan, scriptwriter.TopicCheck]
-    assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Запись готова?")
+    with pytest.raises(ValueError, match="Черновик не сохранён"):
+        scriptwriter.write(tmp_path, "studio_dark", needs_rewrite=originality.check_draft(tmp_path))
+    assert attempts[0] is None and "новую бытовую ситуацию" in attempts[1]
+    assert len(attempts) == 2
+    assert not (tmp_path / "3_script_plan.json").exists()
 
 
-def test_writer_uses_only_meaning_even_when_summary_and_old_plan_quote_source(tmp_path, monkeypatch):
-    quote = "Этот секрет навсегда изменит ваш монтаж"
-    dump(tmp_path / "2_analysis.json", {
-        "core_message": quote + ". Тема — субтитры в редакторе.",
-        "hook_mechanism": quote, "narrative_arc": "Создание дорожки и проверка таймингов.",
-        "pacing_and_editing": quote, "topic_supported": True,
-        "original_transcript": [{"start": 0.0, "end": 4.0, "text": quote}],
-    })
-    previous = plan()
-    previous.scenes[0].spoken_text = quote
-    dump(tmp_path / "3_script_plan.json", previous.model_dump())
-
-    def generate(prompt, data, schema):
-        if schema is ScriptPlan:
-            assert data["meaning"] == {"core_message": "Тема — субтитры в редакторе.",
-                                       "narrative_arc": "Создание дорожки и проверка таймингов."}
-            assert quote not in str(data)
-            assert "previous_plan" not in data
-            assert data["feedback"] == "Сделай объяснение короче."
-            return plan()
-        assert data["speech"][0]["text"] == quote
-        return schema(supported=True, correction="")
-
-    monkeypatch.setattr(scriptwriter, "vision", generate)
-    scriptwriter.write(tmp_path, "studio_dark", feedback="Сделай объяснение короче.")
-    assert quote not in (tmp_path / "3_script_plan.json").read_text()
+def test_jaccard_rejects_reordered_vocabulary_above_threshold():
+    assert originality.overlap(["субтитры предпросмотр дорожка новый"],
+                               "дорожка эффект предпросмотр субтитры")
+    assert not originality.overlap(["кадр композиция анимация"],
+                                   "звук музыка дорожка кадр")
 
 
 def test_same_reference_cannot_return_previous_narration(tmp_path, monkeypatch):
-    dump(tmp_path / "2_analysis.json", {
-        "core_message": "Монтаж Reels", "hook_mechanism": "Вопрос", "narrative_arc": "Показ процесса",
-        "pacing_and_editing": "Экран", "original_transcript": [],
-    })
+    dump(tmp_path / "2_analysis.json", idea())
     previous = plan()
     narration = " ".join(scene.spoken_text for scene in previous.scenes)
     calls = []
 
-    def generate(prompt, data, schema):
+    def generate(prompt, data, schema, **kwargs):
         assert narration not in str(data)
         calls.append(schema)
+        if schema is scriptwriter.TopicCheck:
+            return schema(supported=True, correction="")
         if len(calls) == 1:
             return previous
         assert "слишком похож" in data["revision"]
@@ -274,6 +248,6 @@ def test_same_reference_cannot_return_previous_narration(tmp_path, monkeypatch):
         return rewritten
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
-    scriptwriter.write(tmp_path, "studio_dark", previous_narrations=[narration])
-    assert calls == [ScriptPlan, ScriptPlan]
+    scriptwriter.write(tmp_path, "studio_dark", needs_rewrite=originality.check_draft(tmp_path, [narration]))
+    assert calls == [ScriptPlan, ScriptPlan, scriptwriter.TopicCheck]
     assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Сначала")

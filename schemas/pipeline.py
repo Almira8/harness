@@ -49,12 +49,11 @@ class Extraction(Record):
 
 
 class ReferenceAnalysis(Record):
-    core_message: str = Field(min_length=1)
-    hook_mechanism: str = Field(min_length=1)
-    narrative_arc: str = Field(min_length=1)
-    pacing_and_editing: str = Field(min_length=1)
-    original_transcript: list[Phrase]
-    topic_supported: bool | None = None
+    topic_problem: str
+    core_insight: str
+    hook_formula: str
+    narrative_formula: str
+    visual_rhythm: str
 
 
 class ScreenBeat(Record):

@@ -1,5 +1,3 @@
-import re
-
 from services import background_manager as backgrounds
 from schemas.pipeline import Record, ReferenceAnalysis, ScriptPlan
 from .common import CONFIG, dump, read, vision
@@ -10,32 +8,18 @@ class TopicCheck(Record):
     correction: str
 
 
-def word_windows(text, size=6):
-    words = re.findall(r"[^\W_]+", text.casefold().replace("ё", "е"))
-    return {tuple(words[i:i + size]) for i in range(len(words) - size + 1)}
-
-
-def repeats_narration(text, other):
-    words = re.findall(r"[^\W_]+", text.casefold().replace("ё", "е"))
-    other_words = re.findall(r"[^\W_]+", other.casefold().replace("ё", "е"))
-    if words and words == other_words:
-        return True
-    phrases = word_windows(text, size=3)
-    shared = phrases & word_windows(other, size=3)
-    return len(shared) >= 3 and len(shared) / len(phrases) >= 0.4
-
-
-def write(directory, bg, brief="", feedback="", *, bg_mode=None, previous_narrations=()):
+def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=None):
     analysis = ReferenceAnalysis.model_validate(read(directory / "2_analysis.json"))
-    if analysis.topic_supported is False and not feedback.strip():
+    if not (analysis.topic_problem and analysis.core_insight) and not feedback.strip():
         raise ValueError("Тему референса не удалось подтвердить. Открой «Текст из референса» и укажи тему через «Запросить правки».")
-    prompt = ("Создай оригинальный практический Reels. Сохрани решаемую задачу, "
-        "способ, результат и концепцию демонстрации. Напиши новый сценарий с чистого листа: "
-        "выбери другой заход в тему, заново построй фразы и связки, сформулируй свой финал. "
-        "Замена слов синонимами и пересказ реплика за репликой не подходят. Если порядок шагов "
-        "важен для результата, сохрани его. Названия инструментов, команды и термины можно сохранить. "
-        "Самостоятельно сформулируй заголовок, подпись и экранные плашки. "
-        "Повтори идею показа, предложив собственную композицию и графику. "
+    prompt = ("Ты создаёшь оригинальный ролик на основе абстрактной формулы идеи. "
+        "Тебе запрещено пересказывать или синонимизировать чужой текст. "
+        "Придумай свежий хук и новый жизненный пример или аналог. Объясни core_insight "
+        "живым разговорным языком, словно делишься собственным опытом с нуля, "
+        "без выдуманных заявлений о реальных событиях. "
+        "Не копируй порядок предложений из оригинала. Выстрой естественную речь. "
+        "hook_formula и narrative_formula описывают механику удержания. "
+        "Используй их свободно, под новый пример. Самостоятельно сформулируй заголовок, подпись и надписи. "
         "Хук должен называть практический результат или конкретную проблему. "
         "Дай последовательные выполнимые шаги, сохрани названия инструментов, подтверждённые разбором. "
         "Подстрой объём речи под темп и длительность референса, если пользователь не задал другое. "
@@ -65,77 +49,33 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, previous_narrat
         prompt += "\nИспользуй перечисленные пресеты с правильным типом. Начни с preferred_background."
     if bg_mode != "ai_generate" and bg not in presets:
         raise ValueError(f"Неизвестный пресет --bg: {bg}")
-    extraction_path = directory / "1_extracted.json"
-    extraction = read(extraction_path) if extraction_path.exists() else {}
-    speech = extraction.get("transcript") or [phrase.model_dump() for phrase in analysis.original_transcript]
-    screen_text = extraction.get("screen_text", [])
-    source_texts = [" ".join(phrase["text"] for phrase in speech)]
-    source_texts.extend(line for item in screen_text for line in item["text"].splitlines())
-    source_windows = set().union(*(word_windows(text) for text in source_texts))
-    quoted_windows = set().union(*(word_windows(text, size=5) for text in source_texts))
-    meaning = {}
-    for key in ("core_message", "narrative_arc"):
-        sentences = re.split(r"(?<=[.!?;])\s+|\n+", getattr(analysis, key))
-        meaning[key] = " ".join(sentence for sentence in sentences
-                                if not quoted_windows & word_windows(sentence, size=5))
-    if not any(meaning.values()) and not feedback.strip():
-        raise ValueError("Не удалось выделить идею отдельно от слов референса. Укажи главную мысль через «Запросить правки».")
-    data = {"meaning": meaning, "brief": brief, "feedback": feedback,
+    data = {"meaning": analysis.model_dump(), "brief": brief, "feedback": feedback,
             "preferred_background": bg, "presets": presets}
-    if extraction:
-        data["reference_duration"] = extraction["duration"]
-        data["reference_words_per_minute"] = extraction["words_per_minute"]
-    verify_topic = analysis.topic_supported is not None
-    source_speech = source_texts[0]
-    for _ in range(3):
-        plan = vision(prompt,data,ScriptPlan)
-        narration = " ".join(s.spoken_text for s in plan.scenes)
-        draft_text = [narration, plan.title, plan.caption,
-                      *(s.overlay_text or "" for s in plan.scenes),
-                      *(beat.screen_text for scene in plan.scenes for beat in (scene.screen_beats or []))]
-        if any(source_windows & word_windows(text) for text in draft_text):
+    for _ in range(2):
+        plan = vision(prompt, data, ScriptPlan, temperature=0.75)
+        if needs_rewrite is not None and needs_rewrite(plan):
             data["revision"] = (
-                "В черновике найдено дословное совпадение из шести и более слов. "
-                "Напиши новый хук и перестрой фразы целиком, сохранив тему, шаги и результат."
+                "Предыдущий черновик слишком похож на исходный или прежний текст. "
+                "Зайди с другой стороны, придумай новую бытовую ситуацию, "
+                "измени порядок объяснения и перепиши все реплики и надписи с нуля."
             )
             continue
-        if repeats_narration(narration, source_speech) or (
-            not feedback.strip() and any(repeats_narration(narration, previous) for previous in previous_narrations)
-        ):
-            data["revision"] = (
-                "Черновик слишком похож на исходный или предыдущий текст. "
-                "Зайди через результат вместо прежнего хука, объясни метод с другой точки зрения "
-                "и предложи самостоятельный пример, сохраняя исходную задачу."
-            )
-            continue
-        if verify_topic:
-            check = vision(
-                "Проверь, что черновик сохраняет основную задачу, метод и результат исходника. "
-                "Приоритет у явного уточнения пользователем самой темы. "
-                "Отдельно проверь оригинальность хука, речи, заголовка, подписи и плашек. "
-                "Поставь supported=false при построчном пересказе, повторе необычной фразы "
-                "или сохранении построения реплик с заменой слов синонимами. "
-                "Совпадение фактов, обязательных шагов, названий инструментов и терминов допустимо. "
-                "При слишком близком черновике укажи, какие фразы перестроить, не меняя задачу. "
-                "Если тема исходника не подтверждена и пользователь не назвал её явно, поставь supported=false. "
-                "Считай подменой темы выдуманный инструмент, другой процесс или превращение "
-                "случайного примера в главную тему. Отметь supported=false при подмене и опиши правку.",
-                {"meaning": {**meaning, "topic_supported": analysis.topic_supported},
-                 "screen_text": screen_text, "speech": speech,
-                 "brief": brief, "feedback": feedback,
-                 "draft": {"narration": [s.spoken_text for s in plan.scenes], "title": plan.title,
-                           "caption": plan.caption, "overlays": [s.overlay_text for s in plan.scenes]}},
-                TopicCheck,
-            )
-            if not check.supported:
-                data["revision"] = (
-                    "Начни заново по смысловому разбору. Сохрани задачу, метод и результат, "
-                    "но придумай другой хук, перестрой объяснение и напиши новые надписи."
-                )
-                continue
-        break
+        check = vision(
+            "Проверь черновик по абстрактному разбору. Сохранены ли проблема и принцип решения? "
+            "Есть ли конкретный жизненный пример или аналог, который объясняет принцип? "
+            "Предпочти явное уточнение автора, если исходная идея не определилась. "
+            "Отклони черновик, если он подменяет задачу, метод или результат.",
+            {"meaning": data["meaning"], "brief": brief, "feedback": feedback,
+             "draft": plan.model_dump()}, TopicCheck,
+        )
+        if check.supported:
+            break
+        data["revision"] = "Сохрани исходную задачу и принцип решения. Объясни их через конкретный новый пример."
     else:
-        raise ValueError("Не удалось написать сценарий, сохранив тему и оригинальные формулировки. Проверь «Текст из референса» и уточни главное действие.")
+        raise ValueError(
+            "После повторной попытки сценарий остался слишком похож на исходный текст "
+            "или отклонился от идеи. Черновик не сохранён."
+        )
     for index, scene in enumerate(plan.scenes):
         if bg_mode == "ai_generate":
             scene.background_type = "image"
