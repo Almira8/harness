@@ -19,10 +19,10 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
-        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 3:
+        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 4:
             for name in ("1_extracted.json","2_analysis.json","3_script_plan.json"):
                 (directory/name).unlink(missing_ok=True)
-            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":3})
+            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":4})
         if not (directory/"1_extracted.json").exists():
             extractor.extract(path,directory)
         extracted = read(directory/"1_extracted.json")

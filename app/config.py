@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-6.2-astra"
     transcription_model: str = "whisper-1"
+    transcription_language: str = "ru"
     heygen_api_key: str = ""
     heygen_avatar_id: str = ""
     heygen_voice_id: str = ""

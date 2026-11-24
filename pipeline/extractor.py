@@ -9,6 +9,22 @@ from .common import dump, ffmpeg, whisper
 from .ocr import read_frames
 
 
+NO_REFERENCE_TEXT = (
+    "В этом видеофайле не найдена речь и текст на экране. Проверьте, записался ли звук в .mov"
+)
+
+
+def speech_word_count(phrases):
+    # Count words with at least two letters, excluding punctuation, digits and one-letter tokens.
+    return sum(len(re.findall(r"[^\W\d_]{2,}(?:[-’'][^\W\d_]+)*", phrase.text))
+               for phrase in phrases)
+
+
+def require_reference_text(phrases, screen_text):
+    if speech_word_count(phrases) < 5 and not any(item.text.strip() for item in screen_text):
+        raise ValueError(NO_REFERENCE_TEXT)
+
+
 def extract(ref, directory):
     ref = Path(ref).resolve(strict=True)
     metadata = probe(ref)
@@ -44,12 +60,16 @@ def extract(ref, directory):
            "-frames:v", 1, "-q:v", 3, directory / "contact_sheet.jpg")
     audio = None
     phrases = []
-    if any(s["codec_type"] == "audio" for s in metadata["streams"]):
+    has_audio = any(s["codec_type"] == "audio" for s in metadata["streams"])
+    if has_audio:
         audio = "audio.wav"
         ffmpeg("-i", ref, "-vn", "-ac", 1, "-ar", 16000, directory / audio)
         phrases = whisper(directory / audio, "segment")
     samples = [Sample(time=t, frame=by_time[t]) for t in times]
     screen_text, ocr_warning = read_frames(directory, samples)
+    require_reference_text(phrases, screen_text)
+    if speech_word_count(phrases) < 5:
+        phrases = []
     extraction = Extraction(duration=duration, preview=preview.name, audio=audio,
         contact_sheet="contact_sheet.jpg", transcript=phrases,
         words_per_minute=round(60*sum(len(p.text.split()) for p in phrases)/duration, 1),

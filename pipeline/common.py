@@ -77,8 +77,12 @@ def whisper(wav, granularity):
         for chunk in sorted(Path(td).glob("*.wav")):
             with chunk.open("rb") as audio:
                 result = api.audio.transcriptions.create(file=audio, model=settings.transcription_model,
+                    language=settings.transcription_language, temperature=0,
                     response_format="verbose_json", timestamp_granularities=[granularity]).model_dump()
             for part in result.get(granularity + "s") or []:
+                if (part.get("no_speech_prob") is not None and part["no_speech_prob"] > 0.6
+                        and part.get("avg_logprob") is not None and part["avg_logprob"] < -1):
+                    continue
                 if part["end"] > part["start"]:
                     phrases.append(Phrase(start=offset + part["start"], end=offset + part["end"],
                                           text=part.get("text", part.get("word", "")).strip()))

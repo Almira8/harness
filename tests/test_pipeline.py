@@ -5,7 +5,7 @@ from app.media import probe
 from pipeline import composer, scriptwriter, visuals
 from pipeline.edit_director import Callout, EditDirector
 from pipeline.common import dump, ffmpeg, read
-from schemas.pipeline import Phrase, ScriptPlan
+from schemas.pipeline import Phrase, ScreenText, ScriptPlan
 
 
 def plan():
@@ -82,6 +82,8 @@ def test_silent_reference_sends_ordered_individual_frames(tmp_path, monkeypatch)
 
     reference = tmp_path / "silent.mov"
     ffmpeg("-f", "lavfi", "-i", "testsrc2=s=320x180:r=15", "-t", 5, reference)
+    monkeypatch.setattr(extractor, "read_frames", lambda *_: (
+        [ScreenText(time=0, text="Монтаж Reels")], None))
     extractor.extract(reference, tmp_path)
 
     def vision(prompt, data, schema, images):
@@ -90,6 +92,7 @@ def test_silent_reference_sends_ordered_individual_frames(tmp_path, monkeypatch)
         assert times[0] == 0 and times[-1] > 3
         assert len(images) == len(times) and all(image.is_file() for image in images)
         assert not data["transcript"]
+        assert "опирайся ТОЛЬКО на текст с кадров" in prompt
         return schema(core_message="Показ интерфейса", hook_mechanism="Действие",
                       narrative_arc="Демонстрация", pacing_and_editing="Без речи",
                       original_transcript=[])
@@ -168,3 +171,20 @@ def test_screen_evidence_rejects_unrelated_script(tmp_path, monkeypatch):
         scriptwriter.write(tmp_path, "studio_dark")
     assert calls == [ScriptPlan, scriptwriter.TopicCheck, ScriptPlan, scriptwriter.TopicCheck]
     assert not (tmp_path / "3_script_plan.json").exists()
+
+
+def test_reference_without_speech_or_ocr_stops_before_analysis(tmp_path, monkeypatch):
+    import pytest
+
+    from pipeline import extractor
+
+    reference = tmp_path / "silent.mov"
+    ffmpeg("-f", "lavfi", "-i", "color=s=160x90:r=10", "-f", "lavfi", "-i",
+           "anullsrc=r=16000:cl=mono", "-t", 1, reference)
+    monkeypatch.setattr(extractor, "whisper", lambda *_: [
+        Phrase(start=0, end=1, text="А... 123! Вот тут монтаж"),
+    ])
+    monkeypatch.setattr(extractor, "read_frames", lambda *_: ([], None))
+    with pytest.raises(ValueError, match=r"В этом видеофайле не найдена речь и текст на экране"):
+        extractor.extract(reference, tmp_path)
+    assert not (tmp_path / "1_extracted.json").exists()
