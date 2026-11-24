@@ -1,4 +1,5 @@
 import React from 'react';
+import {BackgroundLayer, type BackgroundCue} from './BackgroundLayer';
 import {getVideoMetadata} from '@remotion/media-utils';
 import {AbsoluteFill, Audio, Composition, Easing, Img, OffthreadVideo, Sequence,
   interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
@@ -9,6 +10,7 @@ type Insert = Span & {src: string; animation: 'fade' | 'slide_up'};
 type Callout = Span & {title: string; subtitle: string | null};
 type Word = Span & {word: string};
 type Props = {
+  backgrounds?: BackgroundCue[]; transparentAvatar?: boolean;
   jobId: string; avatar: string; zoom_events: Zoom[]; b_roll: Insert[];
   callouts: Callout[]; words: Word[]; music: string | null; volume: number;
   accent: string; subtitle_style: 'highlight' | 'minimal';
@@ -25,7 +27,7 @@ export function BaseAvatarLayer(p: Props) {
     scale = interpolate(t,[z.startSec,z.endSec],[z.fromScale,z.toScale],
       {...clamp,easing:Easing.out(Easing.ease)});
   }
-  return <AbsoluteFill style={{overflow:'hidden'}}><OffthreadVideo src={media(p.jobId,p.avatar)}
+  return <AbsoluteFill style={{overflow:'hidden'}}><OffthreadVideo src={media(p.jobId,p.avatar)} transparent={p.transparentAvatar}
     style={{...cover,transform:'scale('+scale+')'}}/></AbsoluteFill>;
 }
 
@@ -106,6 +108,7 @@ export function AudioLayer(p: Props) {
 
 function MainComposition(p: Props) {
   return <AbsoluteFill style={{background:'#101816',fontFamily:'DejaVu Sans, sans-serif'}}>
+    <BackgroundLayer cues={p.backgrounds ?? []} jobId={p.jobId}/>
     <BaseAvatarLayer {...p}/><BRollOverlayLayer {...p}/><TitleCalloutLayer {...p}/>
     <KaraokeSubtitlesLayer {...p}/><AudioLayer {...p}/>
   </AbsoluteFill>;

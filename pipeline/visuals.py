@@ -1,8 +1,3 @@
-import base64
-import hashlib
-import json
-import mimetypes
-import re
 import time
 
 import httpx
@@ -10,14 +5,12 @@ import httpx
 from app import providers
 
 from app.config import settings
-from app.providers import download_video, public_url
+from app.providers import download_video
 from app.media import probe
 from schemas.pipeline import ScriptPlan
-from .common import CONFIG, client, digest, dump, ffmpeg, read
-
-
-def fingerprint(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+from .common import dump, read
+from services import background_manager as backgrounds
+from services.background_manager import fingerprint
 
 
 def request(method, url, **kwargs):
@@ -34,75 +27,19 @@ def request(method, url, **kwargs):
     return data["data"]
 
 
-def local_asset(name):
-    path = (CONFIG / name).resolve()
-    if not path.is_relative_to(CONFIG.resolve()) or not path.is_file():
-        raise ValueError(f"Файл пресета отсутствует в config/: {name}")
-    return path
-
-
-def background_spec(scene, presets):
-    key = scene.background_prompt_or_asset
-    spec = presets.get(key)
-    if spec is None:
-        if scene.background_type == "color" and re.fullmatch(r"#[\da-fA-F]{6}", key):
-            spec = {"type":"color", "value":key}
-        elif scene.background_type == "image" and settings.generate_backgrounds:
-            spec = {"type":"image", "prompt":key, "model":settings.background_image_model}
-        else:
-            raise ValueError(f"Неизвестный фон: {key}. Проверьте config/backgrounds.json")
-    spec = dict(spec)
-    if spec["type"] != scene.background_type:
-        raise ValueError(f"Тип фона не совпадает: {key}")
-    if "path" in spec:
-        spec["sha256"] = digest(local_asset(spec["path"]))
-    return spec
-
-
-def resolve(spec, directory, aspect):
-    kind = spec["type"]
-    if kind == "color":
-        if not re.fullmatch(r"#[\da-fA-F]{6}", spec["value"]):
-            raise ValueError("Для фона нужен цвет #RRGGBB")
-        return {"type":"color", "value":spec["value"]}
-    if "url" in spec:
-        return {"type":kind, "url":public_url(spec["url"])}
-    key = fingerprint([spec, aspect])
-    cached = directory / f"background-{key}.json"
-    if cached.exists():
-        return read(cached)
-    if "path" in spec:
-        path = local_asset(spec["path"])
-    else:
-        if kind != "image" or not settings.generate_backgrounds:
-            raise ValueError("Для фона нужен url или path")
-        portrait = aspect == "9:16"
-        source = directory / f"image-{key}.png"
-        if not source.exists():
-            image = client().images.generate(model=settings.background_image_model,
-                prompt=spec["prompt"], size="1024x1536" if portrait else "1536x1024")
-            temp = source.with_suffix(".tmp")
-            temp.write_bytes(base64.b64decode(image.data[0].b64_json))
-            temp.replace(source)
-        path = source.with_suffix(".jpg")
-        width,height = (1080,1920) if portrait else (1920,1080)
-        ffmpeg("-i", source, "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}", "-frames:v",1,path)
-    with path.open("rb") as stream:
-        data = request("POST","https://upload.heygen.com/v1/asset",content=stream,
-                       headers={"Content-Type":mimetypes.guess_type(path.name)[0] or "application/octet-stream"})
-    result = {"type":kind, f"{kind}_asset_id":data["id"]}
-    dump(cached,result)
-    return result
-
-
-def render(directory, aspect="9:16", *, studio_title=None):
+def render(directory, aspect="9:16", *, studio_title=None, bg_mode=None, bg="studio_dark"):
     plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
-    presets = read(CONFIG/"backgrounds.json")
+    specs = backgrounds.scene_specs(plan, bg_mode, bg) if bg_mode else None
+    edit_backgrounds = None
+    if bg_mode == "remotion_greenscreen":
+        edit_backgrounds = [backgrounds.stage_for_remotion(spec, directory) for spec in specs]
+        specs = [backgrounds.GREEN] * len(plan.scenes)
     # Preserve requests already submitted by the earlier studio and by the CLI.
     legacy_key = None
     if studio_title is None or any(directory.glob("heygen-*.json")):
         try:
-            specs = [background_spec(s, presets) for s in plan.scenes]
+            if specs is None:
+                specs = backgrounds.scene_specs(plan, None, bg)
         except ValueError:
             if studio_title is None:
                 raise
@@ -113,7 +50,7 @@ def render(directory, aspect="9:16", *, studio_title=None):
     script = "\n\n".join(s.spoken_text.strip() for s in plan.scenes)
     primary_background = None
     if not legacy:
-        primary_background = background_spec(plan.scenes[0], presets)
+        primary_background = backgrounds.legacy_spec(plan.scenes[0], backgrounds.library())
         if primary_background["type"] == "video":
             raise ValueError("В студии для HeyGen v3 выберите цвет или изображение для фона")
     key = legacy_key if legacy else fingerprint([
@@ -122,14 +59,22 @@ def render(directory, aspect="9:16", *, studio_title=None):
 
     raw = directory/"4_heygen_raw.mp4"
     manifest = directory/"4_render.json"
-    if raw.exists() and manifest.exists() and read(manifest).get("key") == key:
-        return raw
+    render_info = {"key": key, "aspect": aspect}
+    if edit_backgrounds is not None:
+        render_info["backgrounds"] = edit_backgrounds
+    if raw.exists() and manifest.exists():
+        previous = read(manifest)
+        if previous.get("key") == key:
+            current = dict(render_info, video_id=previous.get("video_id"))
+            if current != previous:
+                dump(manifest, current)
+            return raw
     if not all((settings.heygen_api_key,settings.heygen_voice_id,settings.heygen_avatar_id)):
         raise ValueError("Заполните HEYGEN_API_KEY, HEYGEN_VOICE_ID и HEYGEN_AVATAR_ID")
     state = directory/f"heygen-{key}.json"
     if not state.exists():
         if not legacy:
-            background = resolve(primary_background, directory, aspect)
+            background = backgrounds.resolve(primary_background, directory, aspect, request)
             if asset_id := background.pop("image_asset_id", None):
                 background["asset_id"] = asset_id
             dump(state, {"status": "submitting"})
@@ -148,7 +93,7 @@ def render(directory, aspect="9:16", *, studio_title=None):
             inputs = [{"character":{"type":"avatar","avatar_id":settings.heygen_avatar_id,
                        "avatar_style":"normal","scale":1.35 if s.camera_framing == "closeup" else 1.0},
                        "voice":{"type":"text","voice_id":settings.heygen_voice_id,"input_text":s.spoken_text},
-                       "background":resolve(b,directory,aspect)} for s,b in zip(plan.scenes,specs)]
+                       "background":backgrounds.resolve(b, directory, aspect, request)} for s,b in zip(plan.scenes,specs)]
             w,h = (1080,1920) if aspect == "9:16" else (1920,1080)
             dump(state, {"status":"submitting"})
             try:
@@ -177,7 +122,7 @@ def render(directory, aspect="9:16", *, studio_title=None):
             # Clear old identity before replacing media so interrupted writes cannot reuse stale output.
             manifest.unlink(missing_ok=True)
             temp.replace(raw)
-            dump(manifest,{"key":key,"video_id":video_id,"aspect":aspect})
+            dump(manifest, dict(render_info, video_id=video_id))
             return raw
         if info["status"] in {"failed","cancelled"}:
             raise ValueError(f"HeyGen: {info['status']} ({video_id})")

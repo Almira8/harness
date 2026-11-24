@@ -1,4 +1,6 @@
+import difflib
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,8 +9,8 @@ from app.config import ROOT
 from app.media import probe
 from schemas.pipeline import Phrase, ScriptPlan
 from .common import digest, dump, ffmpeg, read, whisper
-from .edit_director import RenderProps, Word, direct
-from .visuals import local_asset
+from .edit_director import BackgroundCue, RenderProps, Word, direct
+from services.background_manager import local_asset
 
 STUDIO = ROOT / "remotion-studio"
 IMAGE = {".jpg",".jpeg",".png",".webp"}
@@ -52,7 +54,7 @@ def asset_catalog(directory):
 
 
 def validate_cues(props, duration, directory):
-    for layer in (props.zoom_events,props.b_roll,props.callouts):
+    for layer in (props.zoom_events, props.b_roll, props.callouts, props.backgrounds):
         previous = 0
         for cue in layer:
             if cue.startSec < previous or cue.endSec > duration + 0.034:
@@ -88,7 +90,43 @@ def normalize_cues(cues, duration, assets=None):
     return result
 
 
-def prepare(directory, raw, raw_id, duration, feedback=""):
+def background_cues(scenes, backgrounds, words, duration):
+    if len(scenes) != len(backgrounds):
+        raise ValueError("Список фонов устарел. Повторите этап 4.")
+    scene_tokens = [re.findall(r"\w+", scene.spoken_text.casefold()) or [""] for scene in scenes]
+    spoken = [(token, word.startSec) for word in words
+              for token in re.findall(r"\w+", word.word.casefold())]
+    tokens = [token for scene in scene_tokens for token in scene]
+    matches = difflib.SequenceMatcher(None, tokens, [token for token, _ in spoken], autojunk=False)
+    timed = {a + i: spoken[b + i][1] for a, b, size in matches.get_matching_blocks() for i in range(size)}
+    boundaries = [0.0]
+    offset = 0
+    for index, scene in enumerate(scene_tokens[:-1], 1):
+        offset += len(scene)
+        fallback = duration * offset / len(tokens)
+        next_words = (timed[i] for i in range(offset, offset + len(scene_tokens[index])) if i in timed)
+        start = next(next_words, fallback)
+        if not boundaries[-1] < start < duration:
+            start = boundaries[-1] + (duration - boundaries[-1]) * len(scene) / (len(tokens) - offset + len(scene))
+        boundaries.append(start)
+    return [
+        BackgroundCue(startSec=start, endSec=end, **spec)
+        for start, end, spec in zip(boundaries, boundaries[1:] + [duration], backgrounds)
+    ]
+
+
+def transparent_avatar(directory, raw, raw_id):
+    path = directory / f"avatar-keyed-{raw_id[:16]}.webm"
+    if not path.is_file():
+        partial = path.with_name("avatar-keyed-rendering.webm")
+        ffmpeg("-i", raw, "-vf", "chromakey=0x00FF00:0.18:0.07,format=yuva420p,despill=type=green",
+               "-c:v", "libvpx-vp9", "-crf", 22, "-b:v", 0, "-auto-alt-ref", 0,
+               "-c:a", "libopus", partial)
+        partial.replace(path)
+    return path
+
+
+def prepare(directory, raw, raw_id, duration, feedback="", backgrounds=()):
     plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     words = words_for(directory,raw,raw_id)
     catalog = asset_catalog(directory)
@@ -104,7 +142,10 @@ def prepare(directory, raw, raw_id, duration, feedback=""):
         dest.parent.mkdir(exist_ok=True)
         shutil.copy2(track,dest)
         music = dest.relative_to(directory).as_posix()
-    return RenderProps(**cuts.model_dump(),jobId=directory.name,avatar=raw.name,
+    avatar = transparent_avatar(directory, raw, raw_id) if backgrounds else raw
+    cues = background_cues(plan.scenes, backgrounds, words, duration) if backgrounds else []
+    return RenderProps(**cuts.model_dump(),jobId=directory.name,avatar=avatar.name,
+        transparentAvatar=bool(backgrounds), backgrounds=cues,
         words=words,music=music,volume=min(plan.music.volume,0.12),accent="#CBFF68",
         subtitle_style=plan.subtitle_style)
 
@@ -113,7 +154,7 @@ def render(directory, props):
     stage = STUDIO/"public"/"assets"/directory.name
     output = directory/"5_final_output.mp4"
     partial = directory/"5_rendering.mp4"
-    for name in {props.avatar, *(c.src for c in props.b_roll), *([props.music] if props.music else [])}:
+    for name in {props.avatar, *(c.src for c in props.b_roll), *(c.src for c in props.backgrounds if c.src), *([props.music] if props.music else [])}:
         path = source(directory,name)
         target = stage / name
         target.parent.mkdir(parents=True,exist_ok=True)
@@ -139,23 +180,29 @@ def compose(directory, render_only=False, feedback=""):
     raw = directory/"4_heygen_raw.mp4"
     path = directory/"remotion_props.json"
     manifest = directory/"5_inputs.json"
+    render_manifest = directory / "4_render.json"
+    backgrounds = read(render_manifest).get("backgrounds", []) if render_manifest.exists() else []
+    previous_inputs = read(manifest) if manifest.exists() else {}
+    background_changed = backgrounds != previous_inputs.get("backgrounds", [])
+    keyed_source_changed = bool(backgrounds) and previous_inputs.get("raw") != digest(raw)
     # Explicit step 5 treats manual edits as authoritative, even without a script plan.
-    if render_only and path.exists():
+    if render_only and path.exists() and not (background_changed or keyed_source_changed):
         props = RenderProps.model_validate(read(path))
     else:
         raw_id = digest(raw)
-        inputs = {"edit_version":2,"raw":raw_id,"feedback":feedback,"script":digest(directory/"3_script_plan.json"),
+        inputs = {"edit_version":2,"raw":raw_id,"feedback":feedback,"backgrounds":backgrounds,"script":digest(directory/"3_script_plan.json"),
                   "broll":[[a["src"], digest(source(directory, a["src"]))] for a in asset_catalog(directory)]}
         if path.exists() and manifest.exists() and read(manifest)==inputs:
             props = RenderProps.model_validate(read(path))
         else:
             duration = float(probe(raw)["format"]["duration"])
-            props = prepare(directory,raw,raw_id,duration,feedback)
+            props = prepare(directory, raw, raw_id, duration, feedback, backgrounds)
             validate_cues(props,duration,directory)
             dump(path,props.model_dump())
             dump(manifest,inputs)
     if props.jobId != directory.name:
         raise ValueError("jobId в remotion_props.json должен совпадать с папкой выпуска")
-    duration = float(probe(source(directory,props.avatar))["format"]["duration"])
+    avatar = raw if props.transparentAvatar and raw.is_file() else source(directory, props.avatar)
+    duration = float(probe(avatar)["format"]["duration"])
     validate_cues(props,duration,directory)
     return render(directory,props)

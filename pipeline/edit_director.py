@@ -42,9 +42,26 @@ class EditDirector(Record):
     b_roll: list[Insert]
 
 
+class BackgroundCue(Span):
+    kind: Literal["color", "image", "video"]
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    src: str | None = None
+    mediaDuration: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def has_media(self):
+        if (self.kind == "color" and not self.color
+                or self.kind != "color" and not self.src
+                or self.kind == "video" and not self.mediaDuration):
+            raise ValueError("Укажите цвет или медиафайл фона")
+        return self
+
+
 class RenderProps(EditDirector):
     jobId: str
     avatar: str
+    transparentAvatar: bool = False
+    backgrounds: list[BackgroundCue] = Field(default_factory=list)
     words: list[Word]
     music: str | None
     volume: float = Field(ge=0, le=1)

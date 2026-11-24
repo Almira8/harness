@@ -200,15 +200,56 @@ python main.py --job-id pilot --only-step 5
 | 4 | Сохранённый ID запроса, 4_render.json и 4_heygen_raw.mp4 |
 | 5 | Тайминги слов, remotion_props.json и 5_final_output.mp4 |
 
-Стиль редакции задаётся в config/brand_voice.md. В config/backgrounds.json цвет
-задаётся как `{"type":"color","value":"#20352F"}`, а изображение или видео — как
-`{"type":"image","path":"assets/room.jpg"}` или `{"type":"video","url":"https://…"}`.
-Локальные пути отсчитываются от config/. Музыка также должна быть локальным файлом
-в config/. Не добавляйте приватные фото, ключи и исходники в публичный репозиторий.
-Чтобы разрешить создание платных фоновых изображений по описанию, установите
-GENERATE_BACKGROUNDS=true. Модель настраивается через BACKGROUND_IMAGE_MODEL.
-Без этого параметра используются готовые пресеты. Поле b_roll_query служит монтажным
-заданием для подбора перебивки; автоматический поиск стоковых материалов не подключён.
+### Режимы фона
+
+Из корня репозитория, где `reference.mov` — ваш исходник:
+
+```sh
+python main.py --ref reference.mov --job-id preset-demo --bg-mode preset --bg studio_dark
+python main.py --ref reference.mov --job-id auto-demo --bg-mode auto_match
+python main.py --ref reference.mov --job-id ai-demo --bg-mode ai_generate
+python main.py --ref reference.mov --job-id green-demo --bg-mode remotion_greenscreen
+```
+
+- `preset` применяет один пресет ко всем сценам. Для новых выпусков по умолчанию
+  используется `studio_dark`.
+- `auto_match` выбирает пресет по смыслу каждой сцены. `--bg` задаёт запасной
+  вариант на случай, если сценарист предложит неизвестное имя.
+- `ai_generate` генерирует кадр каждой сцены через OpenAI Image
+  (`BACKGROUND_IMAGE_MODEL`, по умолчанию `gpt-image-1`). PNG сохраняются как
+  `workspace/<job_id>/bg_scene_1.png`, `bg_scene_2.png` и далее. Размер PNG
+  1080×1920 или 1920×1080 при `--aspect 16:9`. Явный выбор режима включает
+  платные запросы генерации на этапе 4.
+- `remotion_greenscreen` подбирает пресет для каждой сцены, отправляет
+  `#00FF00` в HeyGen и подставляет фоны на этапе 5. Фон плавно приближается
+  отдельно от аватара. Локальные MP4 зацикливаются без звука. Для хромакея
+  избегайте зелёного в одежде и предметах аватара.
+
+Справка доступна через `python main.py --help`. Чтобы сначала просмотреть
+сценарий, добавьте `--until-step 3`, а затем продолжите с тем же `--job-id`
+через `--from-step 4`. Режим сохраняется в `job.json`. При переходе на
+автовыбор или хромакей у существующего выпуска заново выполните этап 3
+(`--only-step 3 --bg-mode auto_match` или `remotion_greenscreen`), затем
+запустите этапы 4 и 5. Для замены конкретного пресета достаточно этапа 4.
+В Docker укажите путь, видимый контейнеру, и используйте
+`docker compose exec worker python main.py …`.
+
+Стиль редакции задаётся в `config/brand_voice.md`. Чтобы добавить свой фон,
+положите файл в `assets/backgrounds/` и добавьте запись в `config/backgrounds.json`:
+
+```json
+{
+  "my_office": {"type": "image", "path": "assets/backgrounds/office.png", "description": "Светлый офис"},
+  "my_loop": {"type": "video", "path": "assets/backgrounds/loop.mp4", "description": "Мягкая динамика"},
+  "my_color": {"type": "color", "value": "#20352F"}
+}
+```
+
+Для локальных JPG, PNG и MP4 идентификаторы HeyGen кэшируются между выпусками
+в `data/work/heygen-backgrounds/` по содержимому файла и подключению. Замена
+файла автоматически создаёт новую запись. Если используете Docker, пересоберите
+контейнеры после добавления локальных фонов. Музыка по-прежнему берётся из `config/`.
+Поле `b_roll_query` служит заданием для подбора перебивки.
 
 При сетевой ошибке после отправки видео проверьте историю HeyGen.
 Если в heygen-*.json осталось submitting, восстановите подтверждённый video_id
