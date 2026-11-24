@@ -9,11 +9,14 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from pipeline import studio
+from services.background_manager import MEDIA, preset_spec
+
 from .config import ROOT, settings
 from .db import Asset, Event, Job, Project, Reference, event, init_db, new_id, session
 from .media import probe
 from .providers import public_url
-from .schemas import (CreateProject, EditInput, EditPlan, GenerateClip, GenerateInput, ProductionInput,
+from .schemas import (BackgroundInput, CreateProject, EditInput, EditPlan, GenerateClip, GenerateInput, ProductionInput,
                       ReferenceInput, ScheduleInput, Script, validate_assets)
 
 ACTIVE = ("queued", "running", "waiting", "attention")
@@ -153,7 +156,7 @@ def get_project(project_id: str):
         ref_id = script_job.payload.get("reference_id") if script_job else None
         ref = db.get(Reference, ref_id) if ref_id else None
         source = source_info(db.get(Asset, ref.asset_id)) if ref and ref.asset_id else None
-        return {**serialize(project), "reference_file": source,
+        return {**serialize(project), "reference_file": source, "can_change_background": studio.can_swap_background(project),
                 "assets": [serialize(a) for a in db.scalars(select(Asset).where(Asset.project_id == project_id)).all()],
                 "jobs": [serialize(j) for j in jobs],
                 "events": [serialize(e) for e in db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(50)).all()]}
@@ -223,11 +226,43 @@ def production(project_id: str, body: ProductionInput):
             auto_render = body.auto_render and body.mode == "avatar"
             if auto_render and not settings.openai_api_key:
                 raise HTTPException(422, "Для автоматического монтажа нужен OPENAI_API_KEY")
-            kind = "pipeline_video" if auto_render and (project.script or {}).get("pipeline_job_id") else "avatar"
-            enqueue(db, project, kind, {"auto_render": auto_render})
+            if body.background_mode and not auto_render:
+                raise HTTPException(422, "Для смены фона выберите аватар и автоматический монтаж")
+            if body.background_mode in ("preset", "auto_scene", "greenscreen"):
+                validate_background(db, body.background, local_only=body.background_mode == "greenscreen")
+            kind = "pipeline_video" if auto_render and (body.background_mode or (project.script or {}).get("pipeline_job_id")) else "avatar"
+            enqueue(db, project, kind, {"auto_render": auto_render, "background_mode": body.background_mode,
+                                        "background": body.background})
         project.mode, project.status = body.mode, "production"
         event(db, project.id, "production_selected", mode=body.mode)
         return serialize(project)
+
+
+def validate_background(db, name, *, local_only=False):
+    try:
+        spec = preset_spec(name, studio.available_backgrounds(db))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if local_only and "url" in spec:
+        raise HTTPException(422, "Для Remotion выберите цвет или локальный файл")
+
+
+@app.get("/api/backgrounds")
+def list_backgrounds():
+    with session() as db:
+        return [{"id": key, "label": spec.get("description", key), "local": "url" not in spec}
+                for key, spec in studio.available_backgrounds(db).items()]
+
+
+@app.post("/api/projects/{project_id}/background")
+def change_background(project_id: str, body: BackgroundInput):
+    with session() as db:
+        project = project_or_404(db, project_id)
+        require_idle(db, project.id)
+        if project.status not in ("video_review", "video_approved") or not studio.can_swap_background(project):
+            raise HTTPException(409, "Сначала соберите видео в режиме хромакея")
+        validate_background(db, body.background, local_only=True)
+        return enqueue(db, project, "pipeline_background", body.model_dump())
 
 
 @app.post("/api/projects/{project_id}/generate-clip")
@@ -346,17 +381,21 @@ def add_reference(body: ReferenceInput):
 
 @app.post("/api/assets", status_code=201)
 async def upload(file: UploadFile = File(...), kind: str = Form(...), project_id: str = Form("")):
-    if kind not in ("reference", "footage", "insert"):
+    if kind not in ("reference", "footage", "insert", "background"):
         raise HTTPException(422, "Неизвестный тип материала")
     with session() as db:
-        if kind != "reference":
+        if kind not in ("reference", "background"):
             project = project_or_404(db, project_id)
             require_idle(db, project_id)
             if project.status not in ("production", "edit_review", "video_review"):
                 raise HTTPException(409, "Загрузка записи доступна после утверждения сценария и выбора съёмки")
     suffix = Path(file.filename or "video.mp4").suffix.lower()
     image_reference = kind == "reference" and suffix in (".jpg", ".jpeg")
-    if not image_reference and suffix not in (".mp4", ".mov", ".webm", ".m4v"):
+    if kind == "background" and suffix not in MEDIA:
+        raise HTTPException(422, "Фон должен быть файлом JPG, PNG или MP4")
+    image_background = kind == "background" and suffix in {".jpg", ".jpeg", ".png"}
+    is_image = image_reference or image_background
+    if not is_image and suffix not in (".mp4", ".mov", ".webm", ".m4v"):
         raise HTTPException(422, "Для референса выберите JPEG, MOV или MP4")
     asset_id = new_id()
     relative = f"uploads/{asset_id}{suffix}"
@@ -369,16 +408,22 @@ async def upload(file: UploadFile = File(...), kind: str = Form(...), project_id
                 if total > settings.max_upload_mb * 1024 * 1024:
                     raise HTTPException(413, "Файл превышает MAX_UPLOAD_MB")
                 output.write(chunk)
-        metadata = probe(target)
+        try:
+            metadata = probe(target)
+        except RuntimeError as exc:
+            if kind == "background":
+                raise HTTPException(422, "Файл фона не удалось прочитать") from exc
+            raise
         if not any(stream["codec_type"] == "video" for stream in metadata["streams"]):
             raise ValueError("В файле нет видеодорожки")
-        if image_reference and metadata["streams"][0].get("codec_name") != "mjpeg":
-            raise ValueError("Файл должен содержать изображение JPEG")
-        duration = 0 if image_reference else float(metadata["format"]["duration"])
-        if not image_reference and not 0 < duration <= 3600:
+        expected_codec = "png" if suffix == ".png" else "mjpeg"
+        if is_image and metadata["streams"][0].get("codec_name") != expected_codec:
+            raise HTTPException(422, "Содержимое изображения не соответствует формату файла")
+        duration = 0 if is_image else float(metadata["format"]["duration"])
+        if not is_image and not 0 < duration <= 3600:
             raise ValueError("Загрузите видео длительностью до одного часа")
         with session() as db:
-            if kind != "reference":
+            if kind not in ("reference", "background"):
                 project = project_or_404(db, project_id)
                 require_idle(db, project_id)
                 if project.status not in ("production", "edit_review", "video_review"):

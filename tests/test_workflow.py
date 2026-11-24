@@ -329,3 +329,53 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
         "second": 1, "speech": "субтитры.", "action": "В редакторе видна дорожка субтитров.",
         "screen_text": "Субтитры", "animation": "Белая надпись плавно поднимается.", "sound": "Голос",
     }
+
+
+def test_studio_upload_routes_background_to_pipeline(api, monkeypatch):
+    from pipeline.common import ffmpeg
+
+    for key in ("openai_api_key", "heygen_api_key", "heygen_avatar_id", "heygen_voice_id"):
+        monkeypatch.setattr(settings, key, "test-only")
+    file = settings.data_dir / "work" / "background.png"
+    ffmpeg("-f", "lavfi", "-i", "color=s=64x96", "-frames:v", 1, "-threads", 1, file)
+    response = api.post("/api/assets", data={"kind": "background"},
+                        files={"file": ("room.png", file.read_bytes(), "image/png")})
+    assert response.status_code == 201
+    key = "upload:" + response.json()["id"]
+    assert any(item["id"] == key for item in api.get("/api/backgrounds").json())
+    identifier = project(api)
+    approve(api, identifier)
+    response = api.post(f"/api/projects/{identifier}/production", json={
+        "mode": "avatar", "auto_render": True, "background_mode": "preset", "background": key,
+    })
+    assert response.status_code == 200
+    job = api.get(f"/api/projects/{identifier}").json()["jobs"][0]
+    assert job["kind"] == "pipeline_video" and job["payload"]["background"] == key
+
+
+def test_background_swap_keeps_old_video_until_local_render_succeeds(api, monkeypatch, tmp_path):
+    from pipeline.common import dump
+
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path)
+    identifier = project(api)
+    with session() as db:
+        record = db.get(Project, identifier)
+        record.mode = "avatar"
+        record.status = "video_approved"
+        record.render_path = "renders/old.mp4"
+    directory = tmp_path / identifier
+    directory.mkdir()
+    dump(directory / "4_render.json", {"backgrounds": [{"kind": "color", "color": "#20352F"}]})
+    assert api.get(f"/api/projects/{identifier}").json()["can_change_background"]
+
+    def replace(record, job_id, preset):
+        assert preset == "dark_minimal"
+        return "renders/new.mp4"
+
+    monkeypatch.setattr(worker.studio, "change_background", replace)
+    response = api.post(f"/api/projects/{identifier}/background", json={"background": "dark_minimal"})
+    assert response.status_code == 200 and response.json()["kind"] == "pipeline_background"
+    assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/old.mp4"
+    worker.execute(worker.claim_job())
+    result = api.get(f"/api/projects/{identifier}").json()
+    assert result["status"] == "video_review" and result["render_path"] == "renders/new.mp4"

@@ -108,8 +108,8 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
         "либо оставь пустую строку. Текст вставки белый, движение под новый сценарий. "
         "Различай кадр ведущей и предложенную перебивку; для перебивки назови нужный материал. "
         "По умолчанию music.asset=null.\n" + brand_voice)
-    presets = backgrounds.library()
-    if bg_mode in {"auto_match", "remotion_greenscreen"}:
+    presets = backgrounds.studio_library() if bg_mode == "auto_scene" else backgrounds.library()
+    if bg_mode in {"auto_match", "auto_scene", "remotion_greenscreen"}:
         presets.pop("greenscreen", None)
         prompt += ("\nДля каждой сцены выбирай подходящий пресет из presets по его описанию. "
                    "В background_prompt_or_asset впиши только имя пресета. В первой сцене "
@@ -159,8 +159,35 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
             continue
         if bg_mode == "preset" or (bg_mode is None and index == 0):
             scene.background_prompt_or_asset = bg
-        if bg_mode in {"auto_match", "remotion_greenscreen"} and scene.background_prompt_or_asset not in presets:
+        if bg_mode in {"auto_match", "auto_scene", "remotion_greenscreen"} and scene.background_prompt_or_asset not in presets:
             scene.background_prompt_or_asset = bg
         if scene.background_prompt_or_asset in presets:
             scene.background_type = presets[scene.background_prompt_or_asset]["type"]
     dump(directory / "3_script_plan.json", plan.model_dump())
+
+
+class BackgroundChoice(Record):
+    scene_id: int
+    preset: str
+
+
+class BackgroundChoices(Record):
+    scenes: list[BackgroundChoice]
+
+
+def assign_backgrounds(plan, presets, default):
+    response = vision(
+        "Подбери каждой утверждённой сцене один фон из presets по её смыслу. "
+        "Сохраняй фон, пока мысль продолжается. Меняй фон на смене темы. "
+        "Верни только scene_id и ключ пресета. Реплики и кадрирование сохраняет программа.",
+        {"scenes": [{"scene_id": scene.scene_id, "idea": scene.spoken_text} for scene in plan.scenes],
+         "presets": {key: spec.get("description", key) for key, spec in presets.items()}},
+        BackgroundChoices,
+    )
+    choices = {item.scene_id: item.preset for item in response.scenes}
+    for scene in plan.scenes:
+        name = choices.get(scene.scene_id, default)
+        if name not in presets:
+            name = default
+        scene.background_prompt_or_asset = name
+        scene.background_type = presets[name]["type"]

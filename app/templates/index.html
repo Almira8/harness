@@ -1,11 +1,37 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>alylabb · Reels Studio</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
 <body><main><header><strong>alylabb</strong> / Reels Studio</header><h1>Моя студия Reels</h1>
-<nav aria-label="Работа с выпуском"><button id="reference">Референс</button><button id="agree" disabled>Согласовать</button><button id="revise" disabled>Правки</button><button id="rewrite" hidden>Написать заново</button><button id="approve" disabled>Утвердить</button><button id="queue">Очередь</button></nav>
+<nav aria-label="Работа с выпуском"><button id="reference">Референс</button><button id="agree" disabled>Согласовать</button><button id="revise" disabled>Правки</button><button id="rewrite" hidden>Написать заново</button><button id="approve" disabled>Утвердить</button><button id="change-background" hidden>Поменять фон</button><button id="queue">Очередь</button></nav>
 <p id="notice" role="status"></p>
 <section id="upload" hidden><h2>Референс</h2><form id="uploadForm"><label>Видео или изображение<input id="file" type="file" accept=".jpeg,.jpg,.mov,.mp4"></label><label>Или ранее загруженный референс<select id="saved"></select></label><label>Что сохранить в ролике<textarea id="notes" placeholder="Тема, подача, локация"></textarea></label><button>Подготовить сценарий</button></form></section>
 <section id="lineup" hidden><h2>Очередь публикаций</h2><div id="slots"></div></section>
 <label id="picker" hidden>Выпуск<select id="projects"></select></label>
 <article><small id="reference-file"></small><p id="state"></p><h2 id="title"></h2><div id="preview"></div></article>
 <section id="changes" hidden><form id="changesForm"><label>Что исправить<textarea id="feedback" required></textarea></label><button>Отправить правки</button></form></section>
-<section id="source" hidden><form id="sourceForm"><label>Материал<select id="mode"><option value="avatar">Мой аватар HeyGen</option><option value="own">Моя съёмка</option></select></label><input hidden id="footage" type="file" accept="video/*"><button>Начать монтаж</button></form></section>
+<section id="source" hidden>
+  <form id="sourceForm">
+    <label>Материал<select id="mode"><option value="avatar">Мой аватар HeyGen</option><option value="own">Моя съёмка</option></select></label>
+    <input hidden id="footage" type="file" accept="video/*">
+    <div id="avatar-background">
+      <label>Фон аватара<select id="background-mode">
+        <option value="">Фон из сценария</option>
+        <option value="preset">Выбрать фон</option>
+        <option value="auto_scene">Подобрать по сценам</option>
+        <option value="ai_generate">Сгенерировать по теме</option>
+        <option value="greenscreen">Хромакей и фон в Remotion</option>
+      </select></label>
+      <div id="background-options" hidden>
+        <label>Фон из библиотеки<select id="background-preset"></select></label>
+        <label>Или загрузи фон<input id="background-file" type="file" accept=".jpg,.jpeg,.png,.mp4"></label>
+      </div>
+    </div>
+    <button>Начать монтаж</button>
+  </form>
+</section>
+<section id="background-change" hidden>
+  <form id="backgroundChangeForm">
+    <label>Новый фон<select id="replacement-preset"></select></label>
+    <label>Или загрузи фон<input id="replacement-file" type="file" accept=".jpg,.jpeg,.png,.mp4"></label>
+    <button>Пересобрать только монтаж</button>
+  </form>
+</section>
 <section id="schedule" hidden><form id="scheduleForm"><label>Время публикации по Москве<input required id="when" type="datetime-local"></label><label>Публичная ссылка на утверждённый MP4<input required id="url" type="url"></label><button>Запланировать</button></form></section></main></body></html>

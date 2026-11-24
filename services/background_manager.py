@@ -13,7 +13,8 @@ from app.media import probe
 from app.providers import public_url
 from pipeline.common import CONFIG, client, digest, dump, ffmpeg, read
 
-MODES = ("preset", "auto_match", "ai_generate", "remotion_greenscreen")
+STUDIO_MODES = ("preset", "auto_scene", "ai_generate", "greenscreen")
+MODES = (*STUDIO_MODES, "auto_match", "remotion_greenscreen")
 MEDIA = {".jpg": ("image", "image/jpeg"), ".jpeg": ("image", "image/jpeg"),
          ".png": ("image", "image/png"), ".mp4": ("video", "video/mp4")}
 GREEN = {"type": "color", "value": "#00FF00"}
@@ -25,6 +26,26 @@ def fingerprint(value):
 
 def library():
     return read(CONFIG / "backgrounds.json")
+
+
+def studio_library(uploads=()):
+    presets = {key: spec for key, spec in library().items() if key != "greenscreen"}
+    root = ROOT / "assets" / "backgrounds"
+    for file in sorted(root.iterdir()) if root.is_dir() else ():
+        if file.is_file() and not file.is_symlink() and file.suffix.lower() in MEDIA:
+            name = file.relative_to(ROOT).as_posix()
+            if any(spec.get("path") == name for spec in presets.values()):
+                continue
+            presets[f"file:{file.name}"] = {
+                "type": MEDIA[file.suffix.lower()][0], "path": name, "description": file.name,
+            }
+    for asset in uploads:
+        suffix = Path(asset.path).suffix.lower()
+        if asset.kind == "background" and suffix in MEDIA:
+            presets[f"upload:{asset.id}"] = {
+                "type": MEDIA[suffix][0], "path": asset.path, "description": asset.name,
+            }
+    return presets
 
 
 def local_asset(name):
@@ -39,6 +60,10 @@ def background_file(name):
     path = (ROOT / name).resolve()
     if path.is_relative_to(root) and path.is_file():
         return path
+    uploads = settings.data_dir / "uploads"
+    uploaded = (settings.data_dir / name).resolve()
+    if Path(name).parent == Path("uploads") and uploaded.is_relative_to(uploads.resolve()) and uploaded.is_file():
+        return uploaded
     # Existing installations may still store their media relative to config/.
     return local_asset(name)
 
@@ -99,14 +124,21 @@ def generate(directory, filename, prompt, aspect, model):
     return path
 
 
-def scene_specs(plan, mode, bg):
-    presets = library()
+def scene_specs(plan, mode, bg, presets=None):
+    studio = presets is not None
+    presets = studio_library() if presets is None else presets
     if mode is None:
         return [legacy_spec(scene, presets) for scene in plan.scenes]
-    if mode == "preset":
+    if mode in {"preset", "greenscreen"}:
         return [preset_spec(bg, presets)] * len(plan.scenes)
-    if mode in {"auto_match", "remotion_greenscreen"}:
+    if mode in {"auto_match", "auto_scene", "remotion_greenscreen"}:
         return [preset_spec(scene.background_prompt_or_asset, presets) for scene in plan.scenes]
+    if studio:
+        script = " ".join(scene.spoken_text for scene in plan.scenes)
+        spec = {"type": "image", "generated": "bg_scene_1.png", "model": settings.background_image_model,
+                "prompt": "Create a quiet background plate for a centered presenter. No people, logos or text. "
+                          f"Theme: {plan.title}. Context: {script}"}
+        return [spec] * len(plan.scenes)
     return [
         {"type": "image", "generated": f"bg_scene_{index}.png",
          "model": settings.background_image_model,
@@ -129,22 +161,26 @@ def resolve(spec, directory, aspect, request):
         name = spec.get("generated", f"image-{fingerprint([spec, aspect])}.png")
         path = generate(directory, name, spec["prompt"], aspect, spec["model"])
     mime = MEDIA[path.suffix.lower()][1]
-    cache = settings.data_dir / "work" / "heygen-backgrounds"
-    cache.mkdir(parents=True, exist_ok=True)
+    cache = settings.pipeline_workspace / "asset_cache.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
     identity = fingerprint([settings.heygen_api_key, mime, digest(path)])
-    stored = cache / f"{identity}.json"
-    with stored.with_suffix(".lock").open("a") as lock:
+    with cache.with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if stored.is_file():
-            return read(stored)
-        with path.open("rb") as stream:
-            data = request("POST", "https://upload.heygen.com/v1/asset", content=stream,
-                           headers={"Content-Type": mime})
-        asset_id = data.get("asset_id") or data.get("id")
-        if not asset_id:
-            raise ValueError("HeyGen Asset API не вернул asset_id")
-        result = {"type": kind, f"{kind}_asset_id": asset_id}
-        dump(stored, result)
+        entries = read(cache) if cache.exists() else {}
+        if identity in entries:
+            return entries[identity]
+        previous = settings.data_dir / "work" / "heygen-backgrounds" / f"{identity}.json"
+        if previous.is_file():
+            result = read(previous)
+        else:
+            with path.open("rb") as stream:
+                data = request("POST", "https://upload.heygen.com/v1/asset", content=stream,
+                               headers={"Content-Type": mime})
+            asset_id = data.get("asset_id") or data.get("id")
+            if not asset_id:
+                raise ValueError("HeyGen Asset API не вернул asset_id")
+            result = {"type": kind, f"{kind}_asset_id": asset_id}
+        dump(cache, {**entries, identity: result})
         return result
 
 

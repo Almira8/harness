@@ -95,17 +95,26 @@ def process_job(job_id):
             stored.script, stored.status = result, "script_review"
         result = {**result, **reference_evidence}
     elif job.kind == "pipeline_video":
-        raw, output = studio.produce(project,job.id)
+        raw, output = studio.produce(project, job.id, job.payload.get("background_mode"),
+                                     job.payload.get("background", "default_studio"))
         duration = float(probe(settings.data_dir/raw)["format"]["duration"])
         with session() as db:
             stored = db.get(Project,project.id)
             stored.render_path, stored.status = output, "video_review"
+            if job.payload.get("background_mode"):
+                stored.script = {**stored.script, "pipeline_job_id": project.id}
             if not db.get(Asset,job.id):
                 db.add(Asset(id=job.id, project_id=project.id, name="HeyGen", kind="avatar",
                              path=raw,duration=duration))
         result = {"path":output}
     elif job.kind == "pipeline_edit":
         output = studio.revise_edit(project, job.id, assets, job.payload.get("feedback", ""))
+        with session() as db:
+            stored = db.get(Project, project.id)
+            stored.render_path, stored.status = output, "video_review"
+        result = {"path": output}
+    elif job.kind == "pipeline_background":
+        output = studio.change_background(project, job.id, job.payload["background"])
         with session() as db:
             stored = db.get(Project, project.id)
             stored.render_path, stored.status = output, "video_review"

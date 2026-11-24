@@ -150,7 +150,7 @@ def prepare(directory, raw, raw_id, duration, feedback="", backgrounds=()):
         subtitle_style=plan.subtitle_style)
 
 
-def render(directory, props):
+def render(directory, props, props_path=None):
     stage = STUDIO/"public"/"assets"/directory.name
     output = directory/"5_final_output.mp4"
     partial = directory/"5_rendering.mp4"
@@ -160,7 +160,7 @@ def render(directory, props):
         target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(path,target)
     cmd = ["npx","--no-install","remotion","render","src/index.ts","MainComposition",str(partial),
-           "--props="+str(directory/"remotion_props.json"),"--concurrency=2","--overwrite"]
+           "--props="+str(props_path or directory/"remotion_props.json"),"--concurrency=2","--overwrite"]
     if browser := os.getenv("REMOTION_BROWSER_EXECUTABLE"):
         cmd.append("--browser-executable="+browser)
     proc = subprocess.run(cmd,cwd=STUDIO,capture_output=True,text=True,timeout=1800)
@@ -206,3 +206,29 @@ def compose(directory, render_only=False, feedback=""):
     duration = float(probe(avatar)["format"]["duration"])
     validate_cues(props,duration,directory)
     return render(directory,props)
+
+
+def replace_background(directory, new_background):
+    props_path = directory / "remotion_props.json"
+    manifest = directory / "4_render.json"
+    inputs = directory / "5_inputs.json"
+    props = RenderProps.model_validate(read(props_path))
+    if not props.transparentAvatar or not props.backgrounds:
+        raise ValueError("Смена фона доступна для готового видео на хромакее")
+    props.backgrounds = [
+        BackgroundCue(startSec=cue.startSec, endSec=cue.endSec, **new_background)
+        for cue in props.backgrounds
+    ]
+    original = read(manifest)
+    backgrounds = [new_background] * len(original["backgrounds"])
+    temporary = directory / "remotion_background_props.json"
+    dump(temporary, props.model_dump())
+    try:
+        output = render(directory, props, temporary)
+        dump(props_path, props.model_dump())
+        dump(manifest, {**original, "backgrounds": backgrounds})
+        if inputs.exists():
+            dump(inputs, {**read(inputs), "backgrounds": backgrounds})
+        return output
+    finally:
+        temporary.unlink(missing_ok=True)

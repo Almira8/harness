@@ -20,7 +20,7 @@ async function api(path, body) {
 }
 function route(action) { return "projects/" + current.id + "/" + action; }
 function panel(name) {
-  for (const id of ["upload","lineup","source","changes","schedule"]) el(id).hidden = id !== name;
+  for (const id of ["upload","lineup","source","changes","schedule","background-change"]) el(id).hidden = id !== name;
 }
 function addText(parent, tag, content) {
   const node = document.createElement(tag);
@@ -45,13 +45,16 @@ async function selectProject(id) {
   const scriptJob = data.jobs.find(j => j.kind === "script");
   el("rewrite").hidden = !scriptJob?.payload.reference_id || data.reference_file?.kind !== "video" || Boolean(data.post_id);
   el("rewrite").disabled = active;
+  el("change-background").hidden = !data.can_change_background ||
+    !["video_review", "video_approved"].includes(data.status);
+  el("change-background").disabled = active;
   const scriptStage = ["draft","script_review","script_generating"].includes(data.status);
   el("agree").disabled = active || !["draft","script_review","script_approved","production","edit_review"].includes(data.status);
   el("revise").disabled = active || !(scriptStage || ["edit_review","video_review"].includes(data.status));
   el("approve").disabled = active || !["video_review","video_approved"].includes(data.status);
   el("title").textContent = data.script?.title || data.title;
   el("state").textContent = job?.error && ["attention","failed"].includes(job.status) ? job.error :
-    (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",pipeline_video:"Готовим сцены, субтитры и монтаж…",edit:"Монтируем…",pipeline_edit:"Пересобираем монтаж…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
+    (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",pipeline_video:"Готовим сцены, субтитры и монтаж…",edit:"Монтируем…",pipeline_edit:"Пересобираем монтаж…",pipeline_background:"Меняем фон в Remotion…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
   const evidence = scriptJob?.result?.reference_evidence;
   const key = JSON.stringify([id,data.status,data.script,data.render_path,job?.status,scriptJob?.id,evidence]);
   if (key === previewKey) return;
@@ -176,17 +179,69 @@ on("uploadForm", async () => {
   el("uploadForm").reset();
   await refreshList(project.id);
 },true);
+async function loadBackgrounds(selectId, localOnly) {
+  const list = await api("backgrounds");
+  const select = el(selectId);
+  const previous = select.value;
+  const choices = list.filter(item => !localOnly || item.local);
+  select.replaceChildren(...choices.map(item => new Option(item.label, item.id)));
+  if (choices.some(item => item.id === previous)) select.value = previous;
+}
+async function backgroundSelection(selectId, fileId) {
+  const file = el(fileId).files[0];
+  if (!file) return el(selectId).value;
+  const form = new FormData();
+  form.set("kind", "background");
+  form.set("file", file);
+  const asset = await api("assets", form);
+  el(selectId).add(new Option(asset.name, "upload:" + asset.id, true, true));
+  el(fileId).value = "";
+  return "upload:" + asset.id;
+}
 on("agree",async () => {
   if (current.status === "edit_review") { await api(route("render"),{}); return; }
   if (current.status === "draft") { await api(route("generate"),{}); return; }
   if (current.status === "script_review") await api(route("approve-script"),{});
+  el("sourceForm").reset();
+  el("avatar-background").hidden = false;
+  el("background-options").hidden = true;
+  el("footage").hidden = true;
   panel("source");
 });
-el("mode").onchange = () => { el("footage").hidden = el("mode").value !== "own"; };
+el("mode").onchange = () => {
+  el("footage").hidden = el("mode").value !== "own";
+  el("avatar-background").hidden = el("mode").value !== "avatar";
+};
+el("background-mode").onchange = () => run(async () => {
+  const mode = el("background-mode").value;
+  const selectable = ["preset", "auto_scene", "greenscreen"].includes(mode);
+  el("background-options").hidden = !selectable;
+  el("background-file").parentElement.hidden = mode === "auto_scene";
+  if (selectable) await loadBackgrounds("background-preset", mode === "greenscreen");
+});
+on("change-background", async () => {
+  el("backgroundChangeForm").reset();
+  await loadBackgrounds("replacement-preset", true);
+  panel("background-change");
+});
+on("backgroundChangeForm", async () => {
+  const background = await backgroundSelection("replacement-preset", "replacement-file");
+  await api(route("background"), {background});
+  panel();
+}, true);
 on("sourceForm",async () => {
   const mode = el("mode").value;
   if (mode === "own" && !el("footage").files.length) throw Error("Выбери свою видеозапись.");
-  await api(route("production"),{mode,auto_render:mode === "avatar"});
+  const body = {mode, auto_render: mode === "avatar"};
+  if (mode === "avatar" && el("background-mode").value) {
+    body.background_mode = el("background-mode").value;
+    if (["preset", "greenscreen"].includes(body.background_mode)) {
+      body.background = await backgroundSelection("background-preset", "background-file");
+    } else if (body.background_mode === "auto_scene") {
+      body.background = el("background-preset").value;
+    }
+  }
+  await api(route("production"), body);
   if (mode === "own") {
     const form = new FormData();
     form.set("kind","footage"); form.set("project_id",current.id); form.set("file",el("footage").files[0]);

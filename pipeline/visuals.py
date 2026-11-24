@@ -27,16 +27,16 @@ def request(method, url, **kwargs):
     return data["data"]
 
 
-def render(directory, aspect="9:16", *, studio_title=None, bg_mode=None, bg="studio_dark"):
+def render(directory, aspect="9:16", *, studio_title=None, bg_mode=None, bg="studio_dark", presets=None):
     plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
-    specs = backgrounds.scene_specs(plan, bg_mode, bg) if bg_mode else None
+    specs = backgrounds.scene_specs(plan, bg_mode, bg, presets) if bg_mode else None
     edit_backgrounds = None
-    if bg_mode == "remotion_greenscreen":
+    if bg_mode in {"greenscreen", "remotion_greenscreen"}:
         edit_backgrounds = [backgrounds.stage_for_remotion(spec, directory) for spec in specs]
         specs = [backgrounds.GREEN] * len(plan.scenes)
     # Preserve requests already submitted by the earlier studio and by the CLI.
     legacy_key = None
-    if studio_title is None or any(directory.glob("heygen-*.json")):
+    if bg_mode or studio_title is None or any(directory.glob("heygen-*.json")):
         try:
             if specs is None:
                 specs = backgrounds.scene_specs(plan, None, bg)
@@ -46,7 +46,7 @@ def render(directory, aspect="9:16", *, studio_title=None, bg_mode=None, bg="stu
         else:
             legacy_key = fingerprint([settings.heygen_avatar_id, settings.heygen_voice_id, aspect,
                 [(s.spoken_text, s.camera_framing, b) for s, b in zip(plan.scenes, specs)]])
-    legacy = studio_title is None or bool(legacy_key and (directory/f"heygen-{legacy_key}.json").exists())
+    legacy = bool(bg_mode) or studio_title is None or bool(legacy_key and (directory/f"heygen-{legacy_key}.json").exists())
     script = "\n\n".join(s.spoken_text.strip() for s in plan.scenes)
     primary_background = None
     if not legacy:

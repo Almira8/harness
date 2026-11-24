@@ -125,6 +125,12 @@ class EditInput(StrictModel):
 class ProductionInput(StrictModel):
     auto_render: bool = False
     mode: Literal["own", "avatar", "mixed"]
+    background_mode: Literal["preset", "auto_scene", "ai_generate", "greenscreen"] | None = None
+    background: str = Field(default="default_studio", max_length=300)
+
+
+class BackgroundInput(StrictModel):
+    background: str = Field(min_length=1, max_length=300)
 
 
 class GenerateClip(StrictModel):

@@ -13,6 +13,7 @@ from test_pipeline import plan
 
 def test_hands_each_local_media_type_to_heygen_and_reuses_upload(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path / "workspace")
     monkeypatch.setattr(manager, "ROOT", tmp_path)
     assets = tmp_path / "assets" / "backgrounds"
     assets.mkdir(parents=True)
@@ -34,6 +35,7 @@ def test_hands_each_local_media_type_to_heygen_and_reuses_upload(tmp_path, monke
         assert result == {"type": kind, f"{kind}_asset_id": str(len(calls))}
         assert manager.resolve(spec, tmp_path / "job-two", "16:9", upload) == result
     assert len(calls) == len(manager.MEDIA)
+    assert len(read(tmp_path / "workspace" / "asset_cache.json")) == len(manager.MEDIA)
 
 
 def test_ai_frame_is_portrait_png_and_cached(tmp_path, monkeypatch):
@@ -86,3 +88,36 @@ def test_greenscreen_keeps_preset_selection_outside_heygen(tmp_path, monkeypatch
     visuals.render(tmp_path, bg_mode="remotion_greenscreen")
     assert read(tmp_path / "4_render.json")["backgrounds"][1]["color"] == "#DCC9AF"
     assert calls == ["POST", "GET"]
+
+
+def test_explicit_web_video_preset_uses_v2_and_asset_ids(tmp_path, monkeypatch):
+    for name in ("heygen_api_key", "heygen_voice_id", "heygen_avatar_id"):
+        monkeypatch.setattr(settings, name, "test-only")
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path / "workspace")
+    monkeypatch.setattr(manager, "ROOT", tmp_path)
+    library = tmp_path / "assets" / "backgrounds"
+    library.mkdir(parents=True)
+    clip = library / "loop.mp4"
+    ffmpeg("-f", "lavfi", "-i", "color=s=64x96", "-f", "lavfi", "-i",
+           "sine=frequency=440", "-t", 1, clip)
+    dump(tmp_path / "3_script_plan.json", plan().model_dump())
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append(url)
+        if "upload.heygen.com" in url:
+            assert kwargs["headers"]["Content-Type"] == "video/mp4"
+            return {"asset_id": "loop"}
+        if method == "POST":
+            assert url.endswith("/v2/video/generate")
+            assert [item["background"] for item in kwargs["json"]["video_inputs"]] == [
+                {"type": "video", "video_asset_id": "loop"},
+            ] * 2
+            return {"video_id": "test"}
+        return {"status": "completed", "video_url": "fixture"}
+
+    monkeypatch.setattr(visuals, "request", request)
+    monkeypatch.setattr(visuals, "download_video", lambda url, dest: shutil.copyfile(clip, dest))
+    visuals.render(tmp_path, studio_title="Тест", bg_mode="preset",
+                   bg="file:loop.mp4", presets=manager.studio_library())
+    assert sum("upload.heygen.com" in url for url in calls) == 1
