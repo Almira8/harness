@@ -277,3 +277,49 @@ def test_revising_pipeline_edit_keeps_video_until_replacement(api, monkeypatch):
     monkeypatch.setattr(worker.studio, "revise_edit", revision)
     worker.execute(worker.claim_job())
     assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/revised.mp4"
+
+
+def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
+    from pipeline import studio
+    from pipeline.common import dump
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path)
+    with session() as db:
+        db.add(Asset(id="source", name="sample.mov", path="uploads/sample.mov", kind="reference", duration=10))
+        db.add(Reference(id="chosen", asset_id="source"))
+
+    def extract(source, directory):
+        dump(directory / "1_extracted.json", {"transcript": [], "screen_text": [], "ocr_warning": None})
+
+    def analyze(directory):
+        dump(directory / "2_analysis.json", {"core_message": "Субтитры", "topic_supported": True})
+
+    def write(directory, *args):
+        dump(directory / "3_script_plan.json", {
+            "title": "Субтитры", "caption": "", "music": {"asset": None, "volume": 0},
+            "subtitle_style": "minimal", "scenes": [{
+                "scene_id": 1, "spoken_text": "Включаем субтитры.",
+                "camera_framing": "closeup", "background_type": "color",
+                "background_prompt_or_asset": "studio_dark", "overlay_text": "Субтитры",
+                "b_roll_query": None, "screen_beats": [
+                    {"speech": "Включаем", "action": "Ведущая крупно, справа окно редактора.",
+                     "screen_text": "", "animation": ""},
+                    {"speech": "субтитры.", "action": "В редакторе видна дорожка субтитров.",
+                     "screen_text": "Субтитры", "animation": "Белая надпись плавно поднимается."},
+                ],
+            }],
+        })
+
+    monkeypatch.setattr(studio.extractor, "extract", extract)
+    monkeypatch.setattr(studio.analyzer, "analyze", analyze)
+    monkeypatch.setattr(studio.scriptwriter, "write", write)
+    result = api.post("/api/studio/from-reference", params={"reference_id": "chosen"}).json()
+    worker.execute(worker.claim_job())
+    seconds = api.get(f"/api/projects/{result['id']}").json()["script"]["seconds"]
+    assert [second["second"] for second in seconds] == [0, 1]
+    assert seconds[0]["screen_text"] == ""
+    assert seconds[1] == {
+        "second": 1, "speech": "субтитры.", "action": "В редакторе видна дорожка субтитров.",
+        "screen_text": "Субтитры", "animation": "Белая надпись плавно поднимается.", "sound": "Голос",
+    }

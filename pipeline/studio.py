@@ -37,12 +37,23 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     scenes, seconds = [], []
     for scene in plan.scenes:
-        words = scene.spoken_text.split()
         start = len(seconds)
-        for i in range(0,len(words),2):
-            seconds.append({"second":len(seconds),"speech":" ".join(words[i:i+2]),
-                "action":scene.camera_framing+" · "+scene.background_prompt_or_asset,
-                "animation":scene.overlay_text or scene.b_roll_query or "", "sound":"Голос"})
+        framing = "Ведущая крупным планом" if scene.camera_framing == "closeup" else "Ведущая по пояс"
+        beats = scene.screen_beats or []
+        if beats and " ".join(" ".join(beat.speech for beat in beats).split()) == " ".join(scene.spoken_text.split()):
+            for beat in beats:
+                seconds.append({**beat.model_dump(), "second": len(seconds),
+                                "sound": "Голос" if beat.speech.strip() else "Пауза в речи"})
+        else:
+            words = scene.spoken_text.split()
+            for i in range(0, len(words), 2):
+                seconds.append({
+                    "second": len(seconds), "speech": " ".join(words[i:i + 2]),
+                    "action": framing,
+                    "screen_text": scene.overlay_text or "",
+                    "animation": "Появляется белая надпись" if i == 0 and scene.overlay_text else "",
+                    "sound": "Голос",
+                })
         scenes.append({"start":start,"end":len(seconds),"narration":scene.spoken_text,
             "screen_text":scene.overlay_text or "", "graphic":scene.b_roll_query or "",
             "layout":"presenter","animation":"fade","filming":scene.camera_framing,"materials":[]})

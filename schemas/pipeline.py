@@ -57,6 +57,13 @@ class ReferenceAnalysis(Record):
     topic_supported: bool | None = None
 
 
+class ScreenBeat(Record):
+    speech: str
+    action: str = Field(min_length=1)
+    screen_text: str
+    animation: str
+
+
 class SceneItem(Record):
     scene_id: int = Field(ge=1)
     spoken_text: str = Field(min_length=1)
@@ -65,6 +72,7 @@ class SceneItem(Record):
     background_prompt_or_asset: str = Field(min_length=1)
     overlay_text: str | None
     b_roll_query: str | None
+    screen_beats: list[ScreenBeat] | None = None
 
 
 class Music(Record):

@@ -80,11 +80,35 @@ async function selectProject(id) {
     box.append(details);
   }
   if (data.script && data.status !== "script_generating") {
-    addText(box,"p",data.script.scenes.map(s => s.narration).join(" "));
     const details = document.createElement("details");
+    details.open = data.status === "script_review";
     addText(details,"summary","Посекундная раскадровка");
-    for (const s of data.script.seconds) addText(details,"p",s.second + " с · " + [s.speech,s.action,s.animation].filter(Boolean).join(" · "));
+    addText(details,"p","Это план ролика. Точное время уточняется после записи голоса.");
+    const timeline = document.createElement("ol");
+    timeline.className = "storyboard";
+    for (const second of data.script.seconds) {
+      const row = addText(timeline,"li","");
+      addText(row,"strong", second.second + "–" + (second.second + 1) + " с");
+      const fields = document.createElement("dl");
+      const entries = [
+        ["В кадре", second.action || "Кадр не указан"],
+        ["Голос", second.speech || "Пауза"],
+        ["Надпись", second.screen_text === undefined || second.screen_text === null
+          ? "Не указана" : second.screen_text || "Без надписи"],
+        ["Движение", second.animation || "Без нового движения"],
+      ];
+      for (const [label, value] of entries) {
+        addText(fields,"dt",label);
+        addText(fields,"dd",value);
+      }
+      row.append(fields);
+    }
+    details.append(timeline);
     box.append(details);
+    const narration = document.createElement("details");
+    addText(narration,"summary","Текст ведущей целиком");
+    addText(narration,"p",data.script.scenes.map(s => s.narration).join(" "));
+    box.append(narration);
   }
   if (job && ["failed","attention"].includes(job.status)) {
     const retry = addText(box,"button","Повторить задачу");

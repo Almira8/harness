@@ -14,6 +14,7 @@ class Second(StrictModel):
     action: str
     animation: str
     sound: str
+    screen_text: str | None = None
 
 
 class Scene(StrictModel):
