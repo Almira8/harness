@@ -70,6 +70,7 @@ def process_job(job_id):
         assets = db.scalars(select(Asset).where(Asset.project_id == job.project_id,
             Asset.kind.in_(["footage", "avatar", "insert"]))).all() if project else []
     result = {}
+    next_job = None
     if job.kind == "script":
         result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False))
         with session() as db:
@@ -114,7 +115,11 @@ def process_job(job_id):
             db.add(Asset(id=asset_id, project_id=project.id, name=f"HeyGen {job.kind}",
                          kind=job.kind, path=relative, duration=duration))
         result = {"video_id": remote_id, "asset_id": asset_id}
+        if job.kind == "avatar" and job.payload.get("auto_render"):
+            next_job = Job(project_id=project.id, kind="edit", payload={"auto_render": True})
     elif job.kind == "edit":
+        if job.payload.get("auto_render"):
+            next_job = Job(project_id=project.id, kind="render", payload={})
         result = agents.create_edit(project, assets, job.payload.get("feedback", ""))
         with session() as db:
             stored = db.get(Project, project.id)
@@ -144,6 +149,8 @@ def process_job(job_id):
     with session() as db:
         stored = db.get(Job, job.id)
         stored.status, stored.result = "completed", result
+        if next_job is not None:
+            db.add(next_job)
         event(db, job.project_id, "job_completed", job_id=job.id, job_kind=job.kind)
 
 

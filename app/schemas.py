@@ -116,10 +116,12 @@ class GenerateInput(StrictModel):
 
 
 class EditInput(StrictModel):
+    auto_render: bool = False
     feedback: str = Field(default="", max_length=10000)
 
 
 class ProductionInput(StrictModel):
+    auto_render: bool = False
     mode: Literal["own", "avatar", "mixed"]
 
 

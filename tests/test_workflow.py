@@ -157,3 +157,20 @@ def test_secrets_are_not_in_status_response_and_cross_site_writes_fail(api, monk
     assert api.post("/api/projects", headers={"Origin": "https://other.example"},
                     json={"title": "Тест", "brief": "Тест"}).status_code == 403
     assert api.get("/media/../../.env").status_code == 404
+
+
+def test_automatic_edit_stops_at_video_review(api, monkeypatch):
+    identifier = project(api)
+    with session() as db:
+        job = Job(project_id=identifier, kind="edit", payload={"auto_render": True})
+        db.add(job)
+    monkeypatch.setattr(worker.agents, "create_edit", lambda *args: {"notes": "preview"})
+    monkeypatch.setattr(worker, "render", lambda *args: "renders/preview.mp4")
+    worker.execute(worker.claim_job())
+    render_id = worker.claim_job()
+    assert render_id
+    worker.execute(render_id)
+    result = api.get(f"/api/projects/{identifier}").json()
+    assert result["status"] == "video_review"
+    assert result["render_path"] == "renders/preview.mp4"
+    assert worker.claim_job() is None

@@ -177,7 +177,10 @@ def production(project_id: str, body: ProductionInput):
         if body.mode in ("avatar", "mixed"):
             if not all((settings.heygen_api_key, settings.heygen_avatar_id, settings.heygen_voice_id)):
                 raise HTTPException(422, "Аватар ещё не настроен. Заполните параметры HeyGen в .env")
-            enqueue(db, project, "avatar")
+            auto_render = body.auto_render and body.mode == "avatar"
+            if auto_render and not settings.openai_api_key:
+                raise HTTPException(422, "Для автоматического монтажа нужен OPENAI_API_KEY")
+            enqueue(db, project, "avatar", {"auto_render": auto_render})
         project.mode, project.status = body.mode, "production"
         event(db, project.id, "production_selected", mode=body.mode)
         return serialize(project)

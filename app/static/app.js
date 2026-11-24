@@ -160,7 +160,7 @@ function productionMarkup(project) {
     ${
       choose
         ? `<div class="mode-buttons"><button data-mode="own"><strong>Сниму сама</strong><small>Загрузить свою запись</small></button>
-      <button data-mode="avatar" ${connectionStatus.heygen ? "" : "disabled"}><strong>Аватар HeyGen</strong><small>${connectionStatus.heygen ? "Генерация по сценарию" : "Нужно подключить аватар"}</small></button>
+      <button data-mode="avatar" ${connectionStatus.heygen ? "" : "disabled"}><strong>Аватар HeyGen</strong><small>${connectionStatus.heygen ? (connectionStatus.openai ? "Собрать ролик до просмотра" : "Генерация по сценарию") : "Нужно подключить аватар"}</small></button>
       <button data-mode="mixed" ${connectionStatus.heygen ? "" : "disabled"}><strong>Смешанный</strong><small>Моя запись и аватар</small></button></div>`
         : ""
     }
@@ -168,7 +168,7 @@ function productionMarkup(project) {
     ${["production", "edit_review", "video_review"].includes(project.status) ? `<form id="upload-form"><label>Видео для монтажа<input name="file" type="file" accept="video/*" required></label><select name="kind"><option value="footage">Моя запись</option><option value="insert">Видеовставка</option></select><div class="actions"><button type="submit">Загрузить</button></div></form>` : ""}
     ${project.assets.map((asset) => `<div class="asset"><span>${escapeHtml(asset.name)} <span class="muted small">${Math.round(asset.duration)} с · ${escapeHtml(asset.kind)}</span></span><a href="/media/${asset.path}" target="_blank" rel="noopener">Просмотр</a></div>`).join("")}
     ${project.status === "production" ? `<details><summary>Сгенерировать видеовставку</summary><form id="clip-form"><label>Описание кадра<textarea name="prompt" required minlength="10" placeholder="Объект, действие, окружение, камера и звук"></textarea></label><label>Длительность, секунды<input name="duration" type="number" min="5" max="15" value="5"></label><button ${connectionStatus.video_generation ? "" : "disabled"}>Генерировать через HeyGen</button><p class="hint">Запрос расходует средства HeyGen API.</p></form></details>` : ""}
-    ${["production", "edit_review", "video_review"].includes(project.status) ? `<label>Пожелания или правки к монтажу<textarea id="edit-feedback" rows="2" placeholder="Например, на 8-й секунде укрупнить пример"></textarea></label><div class="actions"><button class="primary" data-project-action="edit">Подготовить монтаж</button></div>` : ""}
+    ${["production", "edit_review", "video_review"].includes(project.status) ? `<label>Пожелания или правки к монтажу<textarea id="edit-feedback" rows="2" placeholder="Например, на 8-й секунде укрупнить пример"></textarea></label><div class="actions"><button class="primary" data-project-action="edit">Смонтировать и собрать MP4</button></div>` : ""}
   </section>`;
 }
 
@@ -315,7 +315,7 @@ document.addEventListener("click", async (event) => {
     if (button.dataset.projectAction) {
       const body =
         button.dataset.projectAction === "edit"
-          ? { feedback: document.querySelector("#edit-feedback")?.value || "" }
+          ? { auto_render: true, feedback: document.querySelector("#edit-feedback")?.value || "" }
           : undefined;
       await action(
         `/api/projects/${currentProject}/${button.dataset.projectAction}`,
@@ -325,6 +325,7 @@ document.addEventListener("click", async (event) => {
     if (button.dataset.mode)
       await action(`/api/projects/${currentProject}/production`, {
         mode: button.dataset.mode,
+        auto_render: button.dataset.mode === "avatar" && Boolean(connectionStatus.openai),
       });
     if (button.hasAttribute("data-save-script"))
       await action(
