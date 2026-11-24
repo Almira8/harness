@@ -252,6 +252,9 @@ def edit(project_id: str, body: EditInput):
         if not db.scalar(select(Asset).where(Asset.project_id == project.id,
                 Asset.kind.in_(["footage", "avatar"])).limit(1)):
             raise HTTPException(422, "Загрузите свою запись или дождитесь аватара")
+        if (project.mode == "avatar" and project.status == "video_review" and project.render_path
+                and not project.edit and (project.script or {}).get("pipeline_job_id")):
+            return enqueue(db, project, "pipeline_edit", {"feedback": body.feedback})
         project.render_path = None
         return enqueue(db, project, "edit", body.model_dump())
 

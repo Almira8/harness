@@ -54,7 +54,7 @@ def test_render_resume_and_cached_director_props(tmp_path,monkeypatch):
     assert requests==["POST","GET"]
     monkeypatch.setattr(composer,"whisper",lambda *a: [
         Phrase(start=i*.5,end=(i+1)*.5,text=w) for i,w in enumerate("Первый пример Второй пример".split())])
-    def direct(plan, words, duration, assets):
+    def direct(plan, words, duration, assets, feedback, previous):
         assert words[0].word == "Первый" and words[1].startSec == 0.5
         return EditDirector(zoom_events=[],b_roll=[],callouts=[
             Callout(startSec=0,endSec=1,title=plan.scenes[0].overlay_text,subtitle=None)])
@@ -75,3 +75,69 @@ def test_render_resume_and_cached_director_props(tmp_path,monkeypatch):
     composer.compose(tmp_path,render_only=True)
     assert read(tmp_path/"remotion_props.json") == props
     assert requests==["POST","GET"]
+
+
+def test_silent_reference_sends_ordered_individual_frames(tmp_path, monkeypatch):
+    from pipeline import analyzer, extractor
+
+    reference = tmp_path / "silent.mov"
+    ffmpeg("-f", "lavfi", "-i", "testsrc2=s=320x180:r=15", "-t", 5, reference)
+    extractor.extract(reference, tmp_path)
+
+    def vision(prompt, data, schema, images):
+        times = [sample["time"] for sample in data["samples"]]
+        assert times == sorted(times)
+        assert times[0] == 0 and times[-1] > 3
+        assert len(images) == len(times) and all(image.is_file() for image in images)
+        assert not data["transcript"]
+        return schema(core_message="Показ интерфейса", hook_mechanism="Действие",
+                      narrative_arc="Демонстрация", pacing_and_editing="Без речи",
+                      original_transcript=[])
+
+    monkeypatch.setattr(analyzer, "vision", vision)
+    analyzer.analyze(tmp_path)
+    assert read(tmp_path / "2_analysis.json")["core_message"] == "Показ интерфейса"
+
+
+def test_studio_heygen_uses_configured_engine_and_keeps_remote_id(tmp_path, monkeypatch):
+    from app import providers
+
+    for name in ("heygen_api_key", "heygen_voice_id", "heygen_avatar_id"):
+        monkeypatch.setattr(settings, name, "test-only")
+    monkeypatch.setattr(settings, "heygen_engine", "avatar_v")
+    source = tmp_path / "fixture.mp4"
+    ffmpeg("-f", "lavfi", "-i", "color=s=180x320:r=30", "-f", "lavfi", "-i",
+           "sine=frequency=440", "-t", 1, source)
+    dump(tmp_path / "3_script_plan.json", plan().model_dump())
+    requests = []
+
+    def request(method, path, payload=None, idempotency_key=None):
+        requests.append((method, path))
+        if method == "POST":
+            assert payload["engine"] == {"type": "avatar_v"}
+            assert payload["script"] == "Первый пример\n\nВторой пример"
+            assert payload["background"] == {"type": "color", "value": "#20352F"}
+            assert idempotency_key
+            return {"video_id": "known"}
+        return {"status": "completed", "video_url": "fixture"}
+
+    monkeypatch.setattr(providers, "heygen_request", request)
+    monkeypatch.setattr(visuals, "download_video", lambda url, dest: shutil.copyfile(source, dest))
+    render = visuals.render(tmp_path, studio_title="Тест")
+    render.unlink()
+    visuals.render(tmp_path, studio_title="Тест")
+    assert requests == [("POST", "videos"), ("GET", "videos/known"), ("GET", "videos/known")]
+
+
+def test_director_cues_fit_timeline_and_available_assets():
+    from pipeline.edit_director import Insert
+
+    cues = [
+        Insert(startSec=3, endSec=8, src="clip.mp4", animation="fade"),
+        Insert(startSec=0, endSec=2, src="missing.mp4", animation="fade"),
+        Insert(startSec=2, endSec=4, src="card.jpg", animation="fade"),
+    ]
+    normalized = composer.normalize_cues(cues, 6, {"clip.mp4": {"duration": 1}, "card.jpg": {}})
+    assert [(cue.src, cue.startSec, cue.endSec) for cue in normalized] == [
+        ("card.jpg", 2, 4), ("clip.mp4", 4, 5),
+    ]

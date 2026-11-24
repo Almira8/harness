@@ -250,3 +250,30 @@ def test_unrelated_reference_drafts_are_withheld(api, monkeypatch):
         worker.agents.generate_script(stored, "", reference_id="montage")
     assert len(drafts) == 2
     assert drafts[1]["required_corrections"] == "Верни демонстрацию склеек"
+
+
+def test_revising_pipeline_edit_keeps_video_until_replacement(api, monkeypatch):
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    identifier = project(api)
+    with session() as db:
+        record = db.get(Project, identifier)
+        record.script = {**script(), "pipeline_job_id": identifier}
+        record.mode, record.status = "avatar", "video_review"
+        record.render_path = "renders/current.mp4"
+        db.add(Asset(id="avatar", project_id=identifier, name="HeyGen",
+                     kind="avatar", path="uploads/avatar.mp4", duration=10))
+    result = api.post(f"/api/projects/{identifier}/edit", json={
+        "feedback": "Убрать первую плашку", "auto_render": True,
+    })
+    assert result.status_code == 200
+    assert result.json()["kind"] == "pipeline_edit"
+    assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/current.mp4"
+
+    def revision(record, job_id, assets, feedback):
+        assert record.id == identifier
+        assert feedback == "Убрать первую плашку"
+        return "renders/revised.mp4"
+
+    monkeypatch.setattr(worker.studio, "revise_edit", revision)
+    worker.execute(worker.claim_job())
+    assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/revised.mp4"

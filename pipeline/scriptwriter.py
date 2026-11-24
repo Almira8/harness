@@ -8,7 +8,11 @@ from .common import CONFIG, dump, read, vision
 def write(directory, bg, brief="", feedback=""):
     analysis = ReferenceAnalysis.model_validate(read(directory / "2_analysis.json"))
     prompt = ("Создай оригинальный практический Reels. Сохрани решаемую задачу, "
-        "способ и результат; придумывай новую драматургию и собственные реплики. Привяжи визуал "
+        "способ и результат; придумай новую драматургию и собственные реплики. "
+        "Хук должен называть практический результат или конкретную проблему. "
+        "Дай последовательные выполнимые шаги, сохрани названия инструментов, подтверждённые разбором. "
+        "Подстрой объём речи под темп и длительность референса, если пользователь не задал другое. "
+        "Реплики предназначены для синтеза: без Markdown и режиссёрских ремарок. Привяжи визуал "
         "к конкретной мысли. Используй перечисленные пресеты с правильным типом. Предпочтительный фон "
         "используй в первой сцене. Не выдумывай пути к файлам и музыкальным трекам. "
         "По умолчанию music.asset=null.\n" + (CONFIG / "brand_voice.md").read_text())
@@ -18,6 +22,10 @@ def write(directory, bg, brief="", feedback=""):
     data = {"meaning": analysis.model_dump(exclude={"original_transcript"}), "brief": brief,
          "feedback": feedback, "preferred_background": bg, "presets": presets,
          "previous_plan": read(directory/"3_script_plan.json") if feedback and (directory/"3_script_plan.json").exists() else None}
+    if (directory/"1_extracted.json").exists():
+        extraction = read(directory/"1_extracted.json")
+        data["reference_duration"] = extraction["duration"]
+        data["reference_words_per_minute"] = extraction["words_per_minute"]
     source_words = re.findall(r"\w+", " ".join(p.text for p in analysis.original_transcript).casefold())
     for _ in range(2):
         plan = vision(prompt,data,ScriptPlan)

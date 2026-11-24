@@ -73,12 +73,17 @@ export function KaraokeSubtitlesLayer(p: Props) {
   const t = useCurrentFrame()/useVideoConfig().fps;
   const groups = React.useMemo(() => {
     const result: Word[][] = [];
-    for (let start = 0; start < p.words.length;) {
-      const remaining = p.words.length - start;
-      const count = [5,6,9].includes(remaining) ? 3 : Math.min(4, remaining);
-      result.push(p.words.slice(start, start + count));
-      start += count;
+    let group: Word[] = [];
+    for (const word of p.words) {
+      const last = group.at(-1);
+      if (last && (group.length >= 4 || word.startSec - last.endSec > 0.35 ||
+          word.endSec - group[0].startSec > 2 || /[.!?…]$/.test(last.word))) {
+        result.push(group);
+        group = [];
+      }
+      group.push(word);
     }
+    if (group.length) result.push(group);
     return result;
   }, [p.words]);
   const group = groups.find(g => t >= g[0].startSec && t < g[g.length - 1].endSec);
@@ -111,7 +116,9 @@ const defaults:Props = {jobId:'demo',avatar:'avatar.mp4',zoom_events:[],callouts
 export function Studio() {
   return <Composition id="MainComposition" component={MainComposition} fps={30} width={1080}
     height={1920} durationInFrames={30} defaultProps={defaults} calculateMetadata={async ({props})=>{
-      const {durationInSeconds} = await getVideoMetadata(media(props.jobId,props.avatar));
-      return {durationInFrames:Math.max(1,Math.ceil(durationInSeconds*30))};
+      const {durationInSeconds, width, height} = await getVideoMetadata(media(props.jobId,props.avatar));
+      const landscape = width > height;
+      return {width: landscape ? 1920 : 1080, height: landscape ? 1080 : 1920,
+        durationInFrames:Math.max(1,Math.ceil(durationInSeconds*30))};
     }}/>;
 }

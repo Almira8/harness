@@ -19,10 +19,10 @@ def prepare(project, reference_id, feedback):
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
-        if meta.get("ref") != str(path):
+        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 2:
             for name in ("1_extracted.json","2_analysis.json","3_script_plan.json"):
                 (directory/name).unlink(missing_ok=True)
-            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16"})
+            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":2})
         if not (directory/"1_extracted.json").exists():
             extractor.extract(path,directory)
         if not (directory/"2_analysis.json").exists():
@@ -46,10 +46,29 @@ def prepare(project, reference_id, feedback):
 
 def produce(project,job_id):
     with workspace(project.id) as directory:
-        raw = visuals.render(directory)
+        raw = visuals.render(directory, studio_title=project.title)
         final = composer.compose(directory)
         raw_path = f"uploads/{job_id}-avatar.mp4"
         output = f"renders/{job_id}.mp4"
         shutil.copyfile(raw, settings.data_dir/raw_path)
         shutil.copyfile(final, settings.data_dir/output)
     return raw_path,output
+
+
+def revise_edit(project, job_id, assets, feedback):
+    with workspace(project.id) as directory:
+        uploaded = directory / "broll" / "uploaded"
+        uploaded.mkdir(parents=True, exist_ok=True)
+        for asset in assets:
+            if asset.kind == "insert":
+                source = settings.data_dir / asset.path
+                name = f"{asset.id}-{asset.name.replace('/', '_')[:80]}"
+                target = uploaded / (name + source.suffix)
+                if not target.exists():
+                    temp = target.with_suffix(".part")
+                    shutil.copyfile(source, temp)
+                    temp.replace(target)
+        final = composer.compose(directory, feedback=feedback)
+        output = f"renders/{job_id}.mp4"
+        shutil.copyfile(final, settings.data_dir / output)
+    return output

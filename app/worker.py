@@ -93,6 +93,12 @@ def process_job(job_id):
                 db.add(Asset(id=job.id, project_id=project.id, name="HeyGen", kind="avatar",
                              path=raw,duration=duration))
         result = {"path":output}
+    elif job.kind == "pipeline_edit":
+        output = studio.revise_edit(project, job.id, assets, job.payload.get("feedback", ""))
+        with session() as db:
+            stored = db.get(Project, project.id)
+            stored.render_path, stored.status = output, "video_review"
+        result = {"path": output}
     elif job.kind == "analyze":
         with session() as db:
             asset = db.get(Asset, job.payload["asset_id"])

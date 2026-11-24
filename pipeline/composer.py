@@ -38,7 +38,7 @@ def words_for(directory, raw, identity):
 
 def asset_catalog(directory):
     catalog = []
-    for p in sorted((directory/"broll").glob("*")):
+    for p in sorted((directory/"broll").rglob("*")):
         extension = p.suffix.lower()
         if not p.is_file() or extension not in IMAGE | VIDEO:
             continue
@@ -66,13 +66,37 @@ def validate_cues(props, duration, directory):
             raise ValueError(f"Перебивка {cue.src} короче выбранного интервала")
 
 
-def prepare(directory, raw, raw_id, duration):
+def normalize_cues(cues, duration, assets=None):
+    result = []
+    previous = 0.0
+    for cue in sorted(cues, key=lambda cue: cue.startSec):
+        start = max(previous, cue.startSec)
+        end = min(duration, cue.endSec)
+        updates = {}
+        if assets is not None:
+            if cue.src not in assets:
+                continue
+            length = assets[cue.src].get("duration")
+            if length is not None:
+                end = min(end, start + length)
+        if end - start < 0.12:
+            continue
+        if hasattr(cue, "fromScale"):
+            updates["fromScale"] = result[-1].toScale if result else 1.0
+        result.append(cue.model_copy(update={"startSec": start, "endSec": end, **updates}))
+        previous = end
+    return result
+
+
+def prepare(directory, raw, raw_id, duration, feedback=""):
     plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     words = words_for(directory,raw,raw_id)
     catalog = asset_catalog(directory)
-    cuts = direct(plan,words,duration,catalog)
-    if any(c.src not in {a["src"] for a in catalog} for c in cuts.b_roll):
-        raise ValueError("EditDirector выбрал отсутствующую перебивку")
+    previous = read(directory / "remotion_props.json") if feedback and (directory / "remotion_props.json").exists() else None
+    cuts = direct(plan, words, duration, catalog, feedback, previous)
+    cuts.zoom_events = normalize_cues(cuts.zoom_events, duration)
+    cuts.callouts = normalize_cues(cuts.callouts, duration)
+    cuts.b_roll = normalize_cues(cuts.b_roll, duration, {a["src"]: a for a in catalog})
     music = None
     if plan.music.asset:
         track = local_asset(plan.music.asset)
@@ -101,13 +125,16 @@ def render(directory, props):
     proc = subprocess.run(cmd,cwd=STUDIO,capture_output=True,text=True,timeout=1800)
     if proc.returncode:
         raise ValueError("Remotion: "+(proc.stdout+"\n"+proc.stderr)[-2200:])
-    probe(partial)
+    metadata = probe(partial)
+    streams = {stream["codec_type"] for stream in metadata["streams"]}
+    if not {"video", "audio"} <= streams:
+        raise ValueError("В финальном MP4 отсутствует видео или звук")
     partial.replace(output)
     shutil.rmtree(stage)
     return output
 
 
-def compose(directory, render_only=False):
+def compose(directory, render_only=False, feedback=""):
     directory = directory.resolve()
     raw = directory/"4_heygen_raw.mp4"
     path = directory/"remotion_props.json"
@@ -117,13 +144,13 @@ def compose(directory, render_only=False):
         props = RenderProps.model_validate(read(path))
     else:
         raw_id = digest(raw)
-        inputs = {"raw":raw_id,"script":digest(directory/"3_script_plan.json"),
-                  "broll":[a["src"] for a in asset_catalog(directory)]}
+        inputs = {"edit_version":2,"raw":raw_id,"feedback":feedback,"script":digest(directory/"3_script_plan.json"),
+                  "broll":[[a["src"], digest(source(directory, a["src"]))] for a in asset_catalog(directory)]}
         if path.exists() and manifest.exists() and read(manifest)==inputs:
             props = RenderProps.model_validate(read(path))
         else:
             duration = float(probe(raw)["format"]["duration"])
-            props = prepare(directory,raw,raw_id,duration)
+            props = prepare(directory,raw,raw_id,duration,feedback)
             validate_cues(props,duration,directory)
             dump(path,props.model_dump())
             dump(manifest,inputs)

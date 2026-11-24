@@ -25,12 +25,18 @@ class Cut(Record):
     frame: str
 
 
+class Sample(Record):
+    time: float
+    frame: str
+
+
 class Extraction(Record):
     duration: float
     preview: str
     audio: str | None
     contact_sheet: str
     cuts: list[Cut]
+    samples: list[Sample] = Field(default_factory=list)
     transcript: list[Phrase]
     words_per_minute: float
 
