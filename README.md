@@ -153,3 +153,57 @@ npm --prefix renderer run typecheck
 - [HeyGen Video](https://developers.heygen.com/docs/models/heygen-video)
 - [Metricool API](https://help.metricool.com/basic-guide-for-api-integration-r97af)
 - [Remotion](https://www.remotion.dev/docs/)
+
+## Пять этапов для видеореференса
+
+В студии выберите «Референс» и MOV или MP4. После согласования сценария
+выберите «Мой аватар HeyGen». Папка `workspace/<id выпуска>/` на Mac
+смонтирована в контейнер worker. Загрузка собственной съёмки, JPEG и старые выпуски
+сохраняют прежний маршрут. Для новых видеореференсов UI и CLI используют одни модули.
+
+Из корня проекта с установленными requirements и FFmpeg (libass, libx264, drawtext):
+
+```bash
+python main.py --ref path/to/video.mov --bg studio_dark
+```
+
+CLI по умолчанию выполняет все пять этапов, включая платный запрос HeyGen.
+Чтобы сначала прочитать сценарий, укажите стабильный ID и остановку:
+
+```bash
+python main.py --ref path/to/video.mov --job-id pilot --bg studio_dark --until-step 3
+python main.py --job-id pilot --from-step 3
+python main.py --job-id pilot --only-step 5
+```
+
+В Docker используйте `docker compose exec worker python main.py …`; путь к исходнику
+должен быть виден внутри контейнера (например, загруженное видео в `/data/uploads/`).
+`--from-step 3` читает существующий 3_script_plan.json с ручными правками.
+`--only-step 3` заново пишет сценарий по 2_analysis.json. `--only-step N` запускает
+ровно один этап. После изменения речи, крупности или фона используйте
+`--from-step 3` или `--from-step 4`. После изменения субтитров, плашек или музыки
+достаточно `--only-step 5`. Для 16:9 укажите `--aspect 16:9`.
+
+| Этап | Чекпоинты в папке выпуска |
+|---|---|
+| 1 | preview.mp4, audio.wav при наличии звука, стоп-кадры, contact_sheet.jpg, 1_extracted.json |
+| 2 | 2_analysis.json с отдельными полями для смысла, монтажа и транскрипта |
+| 3 | 3_script_plan.json со сценами, музыкой и стилем субтитров |
+| 4 | Сохранённый ID запроса, 4_render.json и 4_heygen_raw.mp4 |
+| 5 | Тайминги слов, 5_captions.ass и 5_final_output.mp4 |
+
+Стиль редакции задаётся в config/brand_voice.md. В config/backgrounds.json цвет
+задаётся как `{"type":"color","value":"#20352F"}`, а изображение или видео — как
+`{"type":"image","path":"assets/room.jpg"}` или `{"type":"video","url":"https://…"}`.
+Локальные пути отсчитываются от config/. Музыка также должна быть локальным файлом
+в config/. Не добавляйте приватные фото, ключи и исходники в публичный репозиторий.
+Чтобы разрешить создание платных фоновых изображений по описанию, установите
+GENERATE_BACKGROUNDS=true. Модель настраивается через BACKGROUND_IMAGE_MODEL.
+Без этого параметра используются готовые пресеты. Поле b_roll_query служит монтажным
+заданием для подбора перебивки; автоматический поиск стоковых материалов не подключён.
+
+При сетевой ошибке после отправки видео проверьте историю HeyGen.
+Если в heygen-*.json осталось submitting, восстановите подтверждённый video_id
+из кабинета перед продолжением. При сохранённом ID ожидание продолжается без нового POST.
+Длительности сцен в предпросмотре сценария оценочные; субтитры и финальные переходы
+рассчитываются после синтеза речи. Склейки определяются по визуальному порогу FFmpeg.

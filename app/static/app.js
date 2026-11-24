@@ -40,7 +40,7 @@ async function selectProject(id) {
   el("approve").disabled = active || !["video_review","video_approved"].includes(data.status);
   el("title").textContent = data.script?.title || data.title;
   el("state").textContent = job?.error && ["attention","failed"].includes(job.status) ? job.error :
-    (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",edit:"Монтируем…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
+    (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",pipeline_video:"Готовим сцены, субтитры и монтаж…",edit:"Монтируем…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
   const key = JSON.stringify([id,data.status,data.script,data.render_path,job?.status]);
   if (key === previewKey) return;
   previewKey = key;

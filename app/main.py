@@ -130,7 +130,7 @@ def start_from_reference(reference_id: str, brief: str = ""):
                           status="script_generating")
         db.add(project)
         db.flush()
-        enqueue(db, project, "script", {"reference_id": ref.id})
+        enqueue(db, project, "script", {"reference_id": ref.id, "pipeline": True})
         return serialize(project)
 
 
@@ -166,7 +166,12 @@ def generate(project_id: str, body: GenerateInput):
             ref = db.get(Reference, body.reference_id)
             if not ref or not (ref.analysis or ref.asset_id):
                 raise HTTPException(422, "Для сценария по референсу нужен загруженный видеофайл или готовый разбор")
-        result = enqueue(db, project, "script", body.model_dump())
+        payload = body.model_dump()
+        previous = db.scalar(select(Job).where(Job.project_id == project.id, Job.kind == "script")
+                             .order_by(Job.created_at.desc()).limit(1))
+        if previous and previous.payload.get("pipeline") and body.reference_id:
+            payload["pipeline"] = True
+        result = enqueue(db, project, "script", payload)
         if body.feedback:
             event(db, project.id, "script_feedback", text=body.feedback)
         project.mode, project.edit, project.render_path = None, None, None
@@ -213,7 +218,8 @@ def production(project_id: str, body: ProductionInput):
             auto_render = body.auto_render and body.mode == "avatar"
             if auto_render and not settings.openai_api_key:
                 raise HTTPException(422, "Для автоматического монтажа нужен OPENAI_API_KEY")
-            enqueue(db, project, "avatar", {"auto_render": auto_render})
+            kind = "pipeline_video" if auto_render and (project.script or {}).get("pipeline_job_id") else "avatar"
+            enqueue(db, project, kind, {"auto_render": auto_render})
         project.mode, project.status = body.mode, "production"
         event(db, project.id, "production_selected", mode=body.mode)
         return serialize(project)

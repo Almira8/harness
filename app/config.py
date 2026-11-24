@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///data/harness.db"
     data_dir: Path = ROOT / "data"
     media_base_url: str = "http://127.0.0.1:8000"
+    pipeline_workspace: Path = ROOT / "workspace"
+    generate_backgrounds: bool = False
+    background_image_model: str = "gpt-image-1"
     max_upload_mb: int = 500
 
 

@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from sqlalchemy import and_, or_, select, update
 
+from pipeline import studio
 from . import agents, providers
 from .config import ROOT, settings
 from .db import Asset, Job, Project, Reference, event, init_db, new_id, now, session
@@ -72,12 +73,26 @@ def process_job(job_id):
     result = {}
     next_job = None
     if job.kind == "script":
-        result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
+        result = None
+        if job.payload.get("pipeline"):
+            result = studio.prepare(project, job.payload["reference_id"], job.payload.get("feedback",""))
+        if result is None:
+            result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
         with session() as db:
             stored = db.get(Project, project.id)
             if stored.script:
                 event(db, project.id, "script_version", script=stored.script)
             stored.script, stored.status = result, "script_review"
+    elif job.kind == "pipeline_video":
+        raw, output = studio.produce(project,job.id)
+        duration = float(probe(settings.data_dir/raw)["format"]["duration"])
+        with session() as db:
+            stored = db.get(Project,project.id)
+            stored.render_path, stored.status = output, "video_review"
+            if not db.get(Asset,job.id):
+                db.add(Asset(id=job.id, project_id=project.id, name="HeyGen", kind="avatar",
+                             path=raw,duration=duration))
+        result = {"path":output}
     elif job.kind == "analyze":
         with session() as db:
             asset = db.get(Asset, job.payload["asset_id"])
