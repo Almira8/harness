@@ -73,9 +73,16 @@ def process_job(job_id):
     result = {}
     next_job = None
     if job.kind == "script":
+        reference_evidence = {}
+
+        def persist_evidence(evidence):
+            reference_evidence["reference_evidence"] = evidence
+            with session() as db:
+                db.get(Job, job.id).result = dict(reference_evidence)
+
         result = None
         if job.payload.get("pipeline"):
-            result = studio.prepare(project, job.payload["reference_id"], job.payload.get("feedback",""))
+            result = studio.prepare(project, job.payload["reference_id"], job.payload.get("feedback",""), persist_evidence)
         if result is None:
             result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
         with session() as db:
@@ -83,6 +90,7 @@ def process_job(job_id):
             if stored.script:
                 event(db, project.id, "script_version", script=stored.script)
             stored.script, stored.status = result, "script_review"
+        result = {**result, **reference_evidence}
     elif job.kind == "pipeline_video":
         raw, output = studio.produce(project,job.id)
         duration = float(probe(settings.data_dir/raw)["format"]["duration"])

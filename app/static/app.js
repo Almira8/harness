@@ -49,7 +49,8 @@ async function selectProject(id) {
   el("title").textContent = data.script?.title || data.title;
   el("state").textContent = job?.error && ["attention","failed"].includes(job.status) ? job.error :
     (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",pipeline_video:"Готовим сцены, субтитры и монтаж…",edit:"Монтируем…",pipeline_edit:"Пересобираем монтаж…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
-  const key = JSON.stringify([id,data.status,data.script,data.render_path,job?.status]);
+  const evidence = data.jobs.find(j => j.kind === "script")?.result?.reference_evidence;
+  const key = JSON.stringify([id,data.status,data.script,data.render_path,job?.status,evidence]);
   if (key === previewKey) return;
   previewKey = key;
   const box = el("preview");
@@ -59,6 +60,24 @@ async function selectProject(id) {
     video.controls = true;
     video.src = "/media/" + data.render_path;
     box.append(video);
+  }
+  if (evidence) {
+    const details = document.createElement("details");
+    addText(details, "summary", "Текст из референса");
+    if (evidence.topic) {
+      addText(details, "p", (evidence.topic_supported === false ? "Тема не подтверждена · " : "Тема · ") + evidence.topic);
+    }
+    addText(details, "h3", "Речь");
+    if (!evidence.transcript.length) addText(details, "p", "Речь не распознана.");
+    for (const item of evidence.transcript) addText(details, "p", item.start.toFixed(1) + " с · " + item.text);
+    addText(details, "h3", "Надписи в кадре");
+    if (evidence.ocr_warning) addText(details, "p", evidence.ocr_warning);
+    if (!evidence.screen_text.length) addText(details, "p", "Надписи не распознаны.");
+    for (const item of evidence.screen_text) {
+      const line = addText(details, "p", item.time.toFixed(1) + " с · " + item.text);
+      line.style.whiteSpace = "pre-line";
+    }
+    box.append(details);
   }
   if (data.script && data.status !== "script_generating") {
     addText(box,"p",data.script.scenes.map(s => s.narration).join(" "));

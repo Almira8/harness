@@ -6,6 +6,7 @@ from pathlib import Path
 from app.media import probe
 from schemas.pipeline import Cut, Extraction, Sample
 from .common import dump, ffmpeg, whisper
+from .ocr import read_frames
 
 
 def extract(ref, directory):
@@ -32,10 +33,9 @@ def extract(ref, directory):
     by_time = {}
     for i, t in enumerate(times):
         path = frames / f"{i:05}.jpg"
-        stamp = f"{t:.2f} s"
         ffmpeg("-ss", min(t,max(0,duration-.1)), "-i", ref, "-map", "0:v:0", "-frames:v", 1, "-vf",
-               f"scale=1280:1280:force_original_aspect_ratio=decrease,setsar=1,"
-               f"drawtext=text='{stamp}':fontcolor=white:fontsize=21:box=1:boxcolor=black:x=5:y=5", path)
+               "scale='min(1920,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease,setsar=1",
+               "-q:v", 2, path)
         if not path.is_file():
             raise ValueError(f"Не удалось извлечь кадр {t:.2f} с")
         by_time[t] = str(path.relative_to(directory))
@@ -48,10 +48,12 @@ def extract(ref, directory):
         audio = "audio.wav"
         ffmpeg("-i", ref, "-vn", "-ac", 1, "-ar", 16000, directory / audio)
         phrases = whisper(directory / audio, "segment")
+    samples = [Sample(time=t, frame=by_time[t]) for t in times]
+    screen_text, ocr_warning = read_frames(directory, samples)
     extraction = Extraction(duration=duration, preview=preview.name, audio=audio,
         contact_sheet="contact_sheet.jpg", transcript=phrases,
         words_per_minute=round(60*sum(len(p.text.split()) for p in phrases)/duration, 1),
         cuts=[Cut(start=t, end=end, frame=by_time.get(t, ""))
               for t, end in zip(starts, starts[1:] + [duration])],
-        samples=[Sample(time=t, frame=by_time[t]) for t in times])
+        samples=samples, screen_text=screen_text, ocr_warning=ocr_warning)
     dump(directory / "1_extracted.json", extraction.model_dump())

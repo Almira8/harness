@@ -8,7 +8,7 @@ from .common import dump, read, workspace
 from schemas.pipeline import ScriptPlan
 
 
-def prepare(project, reference_id, feedback):
+def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
     with session() as db:
         ref = db.get(Reference,reference_id)
         asset = db.get(Asset,ref.asset_id) if ref and ref.asset_id else None
@@ -19,14 +19,20 @@ def prepare(project, reference_id, feedback):
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
-        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 2:
+        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 3:
             for name in ("1_extracted.json","2_analysis.json","3_script_plan.json"):
                 (directory/name).unlink(missing_ok=True)
-            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":2})
+            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":3})
         if not (directory/"1_extracted.json").exists():
             extractor.extract(path,directory)
+        extracted = read(directory/"1_extracted.json")
+        evidence = {key: extracted[key] for key in ("transcript", "screen_text", "ocr_warning")}
+        on_evidence(evidence)
         if not (directory/"2_analysis.json").exists():
             analyzer.analyze(directory)
+        analysis = read(directory/"2_analysis.json")
+        on_evidence({**evidence, "topic": analysis["core_message"],
+                     "topic_supported": analysis.get("topic_supported")})
         scriptwriter.write(directory,"studio_dark",project.brief+"\n"+notes,feedback)
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     scenes, seconds = [], []

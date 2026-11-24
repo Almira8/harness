@@ -141,3 +141,30 @@ def test_director_cues_fit_timeline_and_available_assets():
     assert [(cue.src, cue.startSec, cue.endSec) for cue in normalized] == [
         ("card.jpg", 2, 4), ("clip.mp4", 4, 5),
     ]
+
+
+def test_screen_evidence_rejects_unrelated_script(tmp_path, monkeypatch):
+    dump(tmp_path / "2_analysis.json", {
+        "core_message": "Монтаж Reels", "hook_mechanism": "Титр", "narrative_arc": "Инструкция",
+        "pacing_and_editing": "Запись экрана", "original_transcript": [], "topic_supported": True,
+    })
+    dump(tmp_path / "1_extracted.json", {
+        "duration": 47, "words_per_minute": 0, "transcript": [],
+        "screen_text": [{"time": 0.0, "text": "Как монтировать Reels с ИИ"}],
+    })
+    calls = []
+
+    def generate(prompt, data, schema):
+        assert data["screen_text"][0]["text"] == "Как монтировать Reels с ИИ"
+        calls.append(schema)
+        if schema is ScriptPlan:
+            return plan()
+        return schema(supported=False, correction="Верни тему монтажа Reels.")
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    import pytest
+
+    with pytest.raises(ValueError, match="Не удалось написать сценарий"):
+        scriptwriter.write(tmp_path, "studio_dark")
+    assert calls == [ScriptPlan, scriptwriter.TopicCheck, ScriptPlan, scriptwriter.TopicCheck]
+    assert not (tmp_path / "3_script_plan.json").exists()

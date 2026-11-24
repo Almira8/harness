@@ -30,6 +30,11 @@ class Sample(Record):
     frame: str
 
 
+class ScreenText(Record):
+    time: float
+    text: str
+
+
 class Extraction(Record):
     duration: float
     preview: str
@@ -37,6 +42,8 @@ class Extraction(Record):
     contact_sheet: str
     cuts: list[Cut]
     samples: list[Sample] = Field(default_factory=list)
+    screen_text: list[ScreenText] = Field(default_factory=list)
+    ocr_warning: str | None = None
     transcript: list[Phrase]
     words_per_minute: float
 
@@ -47,6 +54,7 @@ class ReferenceAnalysis(Record):
     narrative_arc: str = Field(min_length=1)
     pacing_and_editing: str = Field(min_length=1)
     original_transcript: list[Phrase]
+    topic_supported: bool | None = None
 
 
 class SceneItem(Record):
