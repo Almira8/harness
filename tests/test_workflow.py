@@ -193,3 +193,20 @@ def test_selected_reference_is_analyzed_and_other_examples_are_excluded(api, mon
     worker.execute(worker.claim_job())
     assert received["adapt_selected_reference"]
     assert received["references"] == [{"url": "", "notes": "Монтаж", "analysis": "Монтаж по референсу"}]
+
+
+def test_studio_accepts_jpeg_and_starts_script(api, monkeypatch):
+    import subprocess
+    from app.media import sample_frames
+
+    jpeg = subprocess.check_output(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                                    "color=red:s=64x96", "-frames:v", "1", "-f", "mjpeg", "pipe:1"])
+    asset = api.post("/api/assets", data={"kind": "reference"},
+                     files={"file": ("room.jpeg", jpeg, "image/jpeg")}).json()
+    assert len(sample_frames(settings.data_dir / asset["path"], asset["duration"])) == 1
+    ref = api.post("/api/references", json={"asset_id": asset["id"], "notes": "Свет"}).json()
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    p = api.post("/api/studio/from-reference", params={"reference_id": ref["id"]}).json()
+    detail = api.get("/api/projects/" + p["id"]).json()
+    assert detail["jobs"][0]["payload"]["reference_id"] == ref["id"]
+    assert api.get("/api/queue").json() == []

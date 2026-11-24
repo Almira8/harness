@@ -50,7 +50,7 @@ def transcribe(path: Path, client):
 
 def sample_frames(path: Path, duration: float):
     frames = []
-    for index in range(6):
+    for index in range(1 if duration == 0 else 6):
         position = min(max(duration - 0.1, 0), duration * index / 6)
         frame_path = settings.data_dir / "work" / f"{path.stem}-frame-{index}.jpg"
         try:

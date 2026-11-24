@@ -1,31 +1,11 @@
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>alylabb · Reels studio</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
-</head>
-<body>
-  <aside>
-    <a class="brand" href="/">alylabb<span>Reels studio</span></a>
-    <nav><button class="nav active" data-view="projects">Выпуски</button><button class="nav" data-view="references">Референсы</button><button class="nav" data-view="jobs">Задачи</button><button class="nav" data-view="settings">Подключения</button></nav>
-    <div class="aside-bottom">Instagram @alylabb</div>
-  </aside>
-  <main>
-    <header><div><p class="eyebrow">Твоя редакция</p><h1 id="page-title">Выпуски</h1></div><button id="new-project" class="primary">Новый Reels <span>＋</span></button></header>
-    <div id="notice" role="status" hidden></div>
-    <section id="content" aria-live="polite"><p>Загружаем выпуски…</p></section>
-  </main>
-  <dialog id="create-dialog">
-    <form id="create-form">
-      <div class="section-heading"><h2>Новый выпуск</h2><button type="button" data-close aria-label="Закрыть">×</button></div>
-      <label>Рабочее название<input name="title" required maxlength="200" placeholder="Например, ИИ монтирует мой Reels"></label>
-      <label>Задание<textarea name="brief" required rows="4" placeholder="Какую мысль раскрываем и что покажем зрителю?"></textarea></label>
-      <label>Вопросы аудитории<textarea name="questions" rows="3" placeholder="Вставь вопросы в исходных формулировках"></textarea></label>
-      <button class="primary" type="submit">Создать выпуск</button>
-    </form>
-  </dialog>
-</body>
-</html>
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>alylabb · Reels Studio</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
+<body><main><header><strong>alylabb</strong> / Reels Studio</header><h1>Моя студия Reels</h1>
+<nav aria-label="Работа с выпуском"><button id="reference">Референс</button><button id="agree" disabled>Согласовать</button><button id="revise" disabled>Правки</button><button id="approve" disabled>Утвердить</button><button id="queue">Очередь</button></nav>
+<p id="notice" role="status"></p>
+<section id="upload" hidden><h2>Референс</h2><form id="uploadForm"><label>Видео или изображение<input id="file" type="file" accept=".jpeg,.jpg,.mov,.mp4"></label><label>Или ранее загруженный референс<select id="saved"></select></label><label>Что сохранить в ролике<textarea id="notes" placeholder="Тема, подача, локация"></textarea></label><button>Подготовить сценарий</button></form></section>
+<section id="lineup" hidden><h2>Очередь публикаций</h2><div id="slots"></div></section>
+<label id="picker" hidden>Выпуск<select id="projects"></select></label>
+<article><p id="state"></p><h2 id="title"></h2><div id="preview"></div></article>
+<section id="changes" hidden><form id="changesForm"><label>Что исправить<textarea id="feedback" required></textarea></label><button>Отправить правки</button></form></section>
+<section id="source" hidden><form id="sourceForm"><label>Материал<select id="mode"><option value="avatar">Мой аватар HeyGen</option><option value="own">Моя съёмка</option></select></label><input hidden id="footage" type="file" accept="video/*"><button>Начать монтаж</button></form></section>
+<section id="schedule" hidden><form id="scheduleForm"><label>Время публикации по Москве<input required id="when" type="datetime-local"></label><label>Публичная ссылка на утверждённый MP4<input required id="url" type="url"></label><button>Запланировать</button></form></section></main></body></html>

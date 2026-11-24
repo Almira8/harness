@@ -105,6 +105,35 @@ def projects():
         return [serialize(p) for p in db.scalars(select(Project).order_by(Project.created_at.desc())).all()]
 
 
+@app.get("/api/queue")
+def publication_queue():
+    with session() as db:
+        rows = db.execute(select(Project, Job).join(Job, Job.project_id == Project.id).where(
+            Project.status == "scheduled", Job.kind == "schedule", Job.status == "completed")).all()
+        queue = [{"id": p.id, "title": (p.script or {}).get("title") or p.title,
+                  "publication_at": j.payload["publication_at"]} for p, j in rows
+                 if datetime.fromisoformat(j.payload["publication_at"]) > datetime.now(timezone.utc)]
+        return sorted(queue, key=lambda item: datetime.fromisoformat(item["publication_at"]))
+
+
+@app.post("/api/studio/from-reference")
+def start_from_reference(reference_id: str, brief: str = ""):
+    if not settings.openai_api_key:
+        raise HTTPException(422, "Для сценария заполните OPENAI_API_KEY")
+    with session() as db:
+        ref = db.get(Reference, reference_id)
+        if not ref or not (ref.analysis or ref.asset_id):
+            raise HTTPException(422, "Выберите загруженный референс")
+        asset = db.get(Asset, ref.asset_id) if ref.asset_id else None
+        project = Project(title=asset.name if asset else ref.notes[:200],
+                          brief=brief[:10000] or "Сохрани тему, смысл и подачу выбранного референса. Создай оригинальный Reels.",
+                          status="script_generating")
+        db.add(project)
+        db.flush()
+        enqueue(db, project, "script", {"reference_id": ref.id})
+        return serialize(project)
+
+
 @app.post("/api/projects", status_code=201)
 def create_project(body: CreateProject):
     with session() as db:
@@ -304,8 +333,9 @@ async def upload(file: UploadFile = File(...), kind: str = Form(...), project_id
             if project.status not in ("production", "edit_review", "video_review"):
                 raise HTTPException(409, "Загрузка записи доступна после утверждения сценария и выбора съёмки")
     suffix = Path(file.filename or "video.mp4").suffix.lower()
-    if suffix not in (".mp4", ".mov", ".webm", ".m4v"):
-        raise HTTPException(422, "Поддерживаются MP4, MOV, WEBM и M4V")
+    image_reference = kind == "reference" and suffix in (".jpg", ".jpeg")
+    if not image_reference and suffix not in (".mp4", ".mov", ".webm", ".m4v"):
+        raise HTTPException(422, "Для референса выберите JPEG, MOV или MP4")
     asset_id = new_id()
     relative = f"uploads/{asset_id}{suffix}"
     target = settings.data_dir / relative
@@ -320,8 +350,10 @@ async def upload(file: UploadFile = File(...), kind: str = Form(...), project_id
         metadata = probe(target)
         if not any(stream["codec_type"] == "video" for stream in metadata["streams"]):
             raise ValueError("В файле нет видеодорожки")
-        duration = float(metadata["format"]["duration"])
-        if not 0 < duration <= 3600:
+        if image_reference and metadata["streams"][0].get("codec_name") != "mjpeg":
+            raise ValueError("Файл должен содержать изображение JPEG")
+        duration = 0 if image_reference else float(metadata["format"]["duration"])
+        if not image_reference and not 0 < duration <= 3600:
             raise ValueError("Загрузите видео длительностью до одного часа")
         with session() as db:
             if kind != "reference":
