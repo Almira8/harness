@@ -18,6 +18,13 @@ def plan():
         "subtitle_style":"highlight","music":{"asset":None,"volume":0.1}})
 
 
+def unchanged_spoken_edit(data):
+    return scriptwriter.SpokenEdit.model_validate({"scenes": [
+        {"scene_id": scene["scene_id"], "spoken_text": scene["spoken_text"]}
+        for scene in data["plan"]["scenes"] if scene["scene_id"] in data["requested_scenes"]
+    ]})
+
+
 def idea():
     return {"topic_problem": "Зрителю трудно разобраться в редакторе.",
             "core_insight": "Раздельные дорожки делают процесс управляемым.",
@@ -31,8 +38,10 @@ def test_writer_receives_only_semantic_fields(tmp_path, monkeypatch):
     dump(tmp_path / "3_script_plan.json", {"previous": "old-phrasing"})
 
     def generate(prompt, data, schema, **kwargs):
-        assert data["meaning"] == idea()
         assert "verbatim-source" not in str(data) and "old-phrasing" not in str(data)
+        if schema is scriptwriter.SpokenEdit:
+            return unchanged_spoken_edit(data)
+        assert data["meaning"] == idea()
         if schema is scriptwriter.TopicCheck:
             return schema(supported=True, correction="")
         assert kwargs["temperature"] == 0.75
@@ -171,12 +180,14 @@ def test_abstract_idea_review_rejects_unrelated_script(tmp_path, monkeypatch):
         if schema is ScriptPlan:
             assert "Подменённая идея" not in str(data)
             return plan()
+        if schema is scriptwriter.SpokenEdit:
+            return unchanged_spoken_edit(data)
         return schema(supported=False, correction="Подменённая идея")
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
     with pytest.raises(ValueError, match="Черновик не сохранён"):
         scriptwriter.write(tmp_path, "studio_dark")
-    assert calls == [ScriptPlan, scriptwriter.TopicCheck] * 2
+    assert calls == [ScriptPlan, scriptwriter.SpokenEdit, scriptwriter.TopicCheck] * 2
     assert not (tmp_path / "3_script_plan.json").exists()
 
 
@@ -238,6 +249,8 @@ def test_same_reference_cannot_return_previous_narration(tmp_path, monkeypatch):
     def generate(prompt, data, schema, **kwargs):
         assert narration not in str(data)
         calls.append(schema)
+        if schema is scriptwriter.SpokenEdit:
+            return unchanged_spoken_edit(data)
         if schema is scriptwriter.TopicCheck:
             return schema(supported=True, correction="")
         if len(calls) == 1:
@@ -249,5 +262,47 @@ def test_same_reference_cannot_return_previous_narration(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
     scriptwriter.write(tmp_path, "studio_dark", needs_rewrite=originality.check_draft(tmp_path, [narration]))
-    assert calls == [ScriptPlan, ScriptPlan, scriptwriter.TopicCheck]
+    assert calls == [ScriptPlan, ScriptPlan, scriptwriter.SpokenEdit, scriptwriter.TopicCheck]
     assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Сначала")
+
+
+def test_spoken_editor_retries_only_scene_with_cliche_and_preserves_visuals(monkeypatch):
+    from schemas.pipeline import ScreenBeat
+
+    draft = plan()
+    first = draft.scenes[0]
+    first.screen_beats = [
+        ScreenBeat(speech="Первый", action="Ведущая смотрит в камеру", screen_text="", animation=""),
+        ScreenBeat(speech="", action="Крупно экран", screen_text="Пример", animation="Появляется надпись"),
+        ScreenBeat(speech="пример", action="Держим кадр", screen_text="", animation=""),
+    ]
+    original = draft.model_dump()
+    brand_voice = (scriptwriter.CONFIG / "brand_voice.md").read_text()
+    calls = []
+
+    def edit(prompt, data, schema):
+        assert schema is scriptwriter.SpokenEdit
+        assert "Монолог 1" in prompt
+        calls.append(data["requested_scenes"])
+        if len(calls) == 1:
+            return schema(scenes=[
+                scriptwriter.SpokenLine(scene_id=1, spoken_text="НЕ СЕКРЕТ, ЧТО это работает."),
+                scriptwriter.SpokenLine(scene_id=2, spoken_text="Смотри, как это выглядит."),
+            ])
+        return schema(scenes=[scriptwriter.SpokenLine(scene_id=1, spoken_text="Вот как я это делаю.")])
+
+    monkeypatch.setattr(scriptwriter, "vision", edit)
+    scriptwriter.edit_spoken_text(draft, brand_voice)
+    assert calls == [{1: [], 2: []}, {1: ["не секрет что"]}]
+    assert first.spoken_text == "Вот как я это делаю."
+    assert draft.scenes[1].spoken_text == "Смотри, как это выглядит."
+    assert first.screen_beats[1].speech == ""
+    assert " ".join(beat.speech for beat in first.screen_beats).split() == first.spoken_text.split()
+
+    edited = draft.model_dump()
+    for before, after in zip(original["scenes"], edited["scenes"]):
+        before.pop("spoken_text")
+        after.pop("spoken_text")
+        for beat in (before["screen_beats"] or []) + (after["screen_beats"] or []):
+            beat.pop("speech")
+    assert edited == original

@@ -1,6 +1,9 @@
+import re
+
 from services import background_manager as backgrounds
 from schemas.pipeline import Record, ReferenceAnalysis, ScriptPlan
 from .common import CONFIG, dump, read, vision
+from .originality import tokens
 
 
 class TopicCheck(Record):
@@ -8,10 +11,80 @@ class TopicCheck(Record):
     correction: str
 
 
+class SpokenLine(Record):
+    scene_id: int
+    spoken_text: str
+
+
+class SpokenEdit(Record):
+    scenes: list[SpokenLine]
+
+
+def cliches(text, stop_list):
+    normalized = " " + " ".join(tokens(text)) + " "
+    return [phrase for phrase in stop_list
+            if " " + " ".join(tokens(phrase)) + " " in normalized
+            or (phrase == "уникальный" and re.search(r"\bуникальн\w+\b", normalized))]
+
+
+def retime_speech(scene, spoken_text):
+    beats = scene.screen_beats or []
+    weights = [len(beat.speech.split()) for beat in beats]
+    if not any(weights):
+        return
+    words = spoken_text.split()
+    total = sum(weights)
+    previous = cumulative = 0
+    for beat, weight in zip(beats, weights):
+        cumulative += weight
+        end = round(cumulative * len(words) / total)
+        beat.speech = " ".join(words[previous:end])
+        previous = end
+
+
+def edit_spoken_text(plan, brand_voice):
+    section = brand_voice.partition("## Жёсткий стоп-лист ИИ-клише")[2]
+    stop_list = [line[2:].strip() for line in section.split("\n## ", 1)[0].splitlines()
+                 if line.startswith("- ") and line[2:].strip()]
+    prompt = (
+        "Ты редактор устной речи. Перепиши только spoken_text указанных сцен. "
+        "Оставь тот же смысл, хук, пример и последовательность объяснения. "
+        "Сохрани количество сцен, их идентификаторы, фон, крупность и всё остальное. "
+        "Замени книжные и рекламные фразы словами, которые человек произносит без бумажки. "
+        "Убирай пустые вступления. Начинай с сути или живой ситуации. "
+        "Проверь каждую реплику по стоп-листу. Следуй правилам и ритму заполненных примеров. "
+        "Верни только идентификатор и новую реплику для каждой запрошенной сцены.\n" + brand_voice
+    )
+    pending = {scene.scene_id: [] for scene in plan.scenes}
+    edited = {}
+    for _ in range(2):
+        response = vision(prompt, {"plan": plan.model_dump(), "requested_scenes": pending}, SpokenEdit)
+        ids = [line.scene_id for line in response.scenes]
+        if len(ids) != len(pending) or set(ids) != set(pending):
+            raise ValueError("Редактор устной речи вернул неполный или неверный набор сцен.")
+        pending = {}
+        for line in response.scenes:
+            text = line.spoken_text.strip()
+            matches = cliches(text, stop_list)
+            if not text or matches:
+                pending[line.scene_id] = matches or ["Пустая реплика"]
+            else:
+                edited[line.scene_id] = text
+        if not pending:
+            break
+    if pending:
+        problems = "; ".join(f"сцена {scene_id}: {', '.join(matches)}" for scene_id, matches in pending.items())
+        raise ValueError(f"Редактор устной речи не устранил штампы: {problems}. Черновик не сохранён.")
+    for scene in plan.scenes:
+        scene.spoken_text = edited[scene.scene_id]
+        retime_speech(scene, scene.spoken_text)
+
+
 def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=None):
     analysis = ReferenceAnalysis.model_validate(read(directory / "2_analysis.json"))
     if not (analysis.topic_problem and analysis.core_insight) and not feedback.strip():
         raise ValueError("Тему референса не удалось подтвердить. Открой «Текст из референса» и укажи тему через «Запросить правки».")
+    brand_voice = (CONFIG / "brand_voice.md").read_text()
     prompt = ("Ты создаёшь оригинальный ролик на основе абстрактной формулы идеи. "
         "Тебе запрещено пересказывать или синонимизировать чужой текст. "
         "Придумай свежий хук и новый жизненный пример или аналог. Объясни core_insight "
@@ -34,7 +107,7 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
         "Используй надпись из overlay_text. В animation опиши, что появляется, движется или исчезает, "
         "либо оставь пустую строку. Текст вставки белый, движение под новый сценарий. "
         "Различай кадр ведущей и предложенную перебивку; для перебивки назови нужный материал. "
-        "По умолчанию music.asset=null.\n" + (CONFIG / "brand_voice.md").read_text())
+        "По умолчанию music.asset=null.\n" + brand_voice)
     presets = backgrounds.library()
     if bg_mode in {"auto_match", "remotion_greenscreen"}:
         presets.pop("greenscreen", None)
@@ -59,6 +132,10 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=N
                 "Зайди с другой стороны, придумай новую бытовую ситуацию, "
                 "измени порядок объяснения и перепиши все реплики и надписи с нуля."
             )
+            continue
+        edit_spoken_text(plan, brand_voice)
+        if needs_rewrite is not None and needs_rewrite(plan):
+            data["revision"] = "После редактуры реплики слишком похожи на исходник. Придумай другой пример и новые реплики."
             continue
         check = vision(
             "Проверь черновик по абстрактному разбору. Сохранены ли проблема и принцип решения? "
