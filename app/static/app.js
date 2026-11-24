@@ -175,6 +175,9 @@ function productionMarkup(project) {
 async function showProject(projectId) {
   currentProject = projectId;
   const project = await api("/api/projects/" + projectId);
+  const refs = await api("/api/references");
+  const previousRef = project.jobs.find(job => job.kind === "script")?.payload?.reference_id;
+  const selectedRef = previousRef || (refs.length === 1 ? refs[0].id : "");
   title.textContent = project.title;
   const stepIndex = {
     draft: 0,
@@ -196,6 +199,7 @@ async function showProject(projectId) {
       ${
         !project.post_id
           ? `<label>Правки или пожелания<textarea id="feedback" rows="2" placeholder="Что учесть в новой версии сценария"></textarea></label>
+      <label>Референс для сценария<select id="script-reference"><option value="">Свободная тема по заданию</option>${refs.map(ref => `<option value="${escapeHtml(ref.id)}" ${selectedRef === ref.id ? "selected" : ""}>${escapeHtml(ref.notes || ref.url || ref.id)}</option>`).join("")}</select></label>
       <label class="inline-label"><input id="research" type="checkbox">Исследовать свежие ролики за 72 часа</label>
       <button class="primary" data-generate ${active ? "disabled" : ""}>${project.script ? "Переписать сценарий" : "Подготовить сценарий и раскадровку"}</button>`
           : ""
@@ -310,6 +314,7 @@ document.addEventListener("click", async (event) => {
     if (button.hasAttribute("data-generate"))
       await action(`/api/projects/${currentProject}/generate`, {
         feedback: document.querySelector("#feedback").value,
+        reference_id: document.querySelector("#script-reference").value || null,
         research: document.querySelector("#research").checked,
       });
     if (button.dataset.projectAction) {

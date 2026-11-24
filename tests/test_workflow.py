@@ -10,7 +10,7 @@ os.environ["DATABASE_URL"] = "sqlite:///" + str(Path(_temporary.name) / "test.db
 os.environ["DATA_DIR"] = str(Path(_temporary.name) / "data")
 
 from app.config import settings
-from app.db import Asset, Base, Job, Project, Session, engine, session
+from app.db import Asset, Base, Job, Project, Reference, Session, engine, session
 from app.main import app
 from app.schemas import EditPlan, Script
 from app import worker
@@ -174,3 +174,22 @@ def test_automatic_edit_stops_at_video_review(api, monkeypatch):
     assert result["status"] == "video_review"
     assert result["render_path"] == "renders/preview.mp4"
     assert worker.claim_job() is None
+
+
+def test_selected_reference_is_analyzed_and_other_examples_are_excluded(api, monkeypatch):
+    identifier = project(api)
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    with session() as db:
+        db.add(Asset(id="source", name="sample", path="uploads/sample.mov", kind="reference", duration=12))
+        db.add_all([Reference(id="chosen", asset_id="source", notes="Монтаж"),
+                    Reference(id="other", notes="Лимон")])
+    received = {}
+    def capture(prompt, data, schema, project_id):
+        received.update(data)
+        return Script.model_validate(script())
+    monkeypatch.setattr(worker.agents, "structured", capture)
+    monkeypatch.setattr(worker.agents, "analyze_asset", lambda asset: ({}, "Монтаж по референсу"))
+    assert api.post(f"/api/projects/{identifier}/generate", json={"reference_id": "chosen"}).status_code == 200
+    worker.execute(worker.claim_job())
+    assert received["adapt_selected_reference"]
+    assert received["references"] == [{"url": "", "notes": "Монтаж", "analysis": "Монтаж по референсу"}]

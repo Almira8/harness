@@ -32,7 +32,7 @@ class Script(StrictModel):
     title: str
     hook_options: list[str] = Field(min_length=3, max_length=8)
     rationale: str
-    duration: int = Field(ge=10, le=90)
+    duration: int = Field(ge=5, le=90)
     caption: str = Field(max_length=2200)
     facts_to_verify: list[str]
     scenes: list[Scene] = Field(min_length=2, max_length=30)
@@ -111,6 +111,7 @@ class ReferenceInput(StrictModel):
 
 
 class GenerateInput(StrictModel):
+    reference_id: str | None = None
     feedback: str = Field(default="", max_length=10000)
     research: bool = False
 

@@ -72,7 +72,7 @@ def process_job(job_id):
     result = {}
     next_job = None
     if job.kind == "script":
-        result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False))
+        result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
         with session() as db:
             stored = db.get(Project, project.id)
             if stored.script:

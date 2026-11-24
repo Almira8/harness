@@ -133,6 +133,10 @@ def generate(project_id: str, body: GenerateInput):
         project = project_or_404(db, project_id)
         if project.post_id:
             raise HTTPException(409, "Для новой версии опубликованного выпуска создайте отдельный выпуск")
+        if body.reference_id:
+            ref = db.get(Reference, body.reference_id)
+            if not ref or not (ref.analysis or ref.asset_id):
+                raise HTTPException(422, "Для сценария по референсу нужен загруженный видеофайл или готовый разбор")
         result = enqueue(db, project, "script", body.model_dump())
         if body.feedback:
             event(db, project.id, "script_feedback", text=body.feedback)

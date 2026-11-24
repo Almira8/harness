@@ -36,12 +36,19 @@ def structured(prompt, data, schema, project_id):
     return response.output_parsed
 
 
-def generate_script(project, feedback, research=False):
+def generate_script(project, feedback, research=False, reference_id=None):
     with session() as db:
-        references = [{"url": r.url, "notes": r.notes, "analysis": r.analysis}
-                      for r in db.scalars(select(Reference)).all()]
+        refs = db.scalars(select(Reference)).all() if not reference_id else [db.get(Reference, reference_id)]
+        references = [{"url": r.url, "notes": r.notes, "analysis": r.analysis} for r in refs if r]
+        if reference_id and (not references or not references[0]["analysis"]):
+            asset = db.get(Asset, refs[0].asset_id) if references and refs[0].asset_id else None
+            if not asset:
+                raise ValueError("Видео выбранного референса недоступно")
+            transcript, analysis = analyze_asset(asset)
+            asset.transcript = transcript
+            refs[0].analysis = references[0]["analysis"] = analysis
         history = [e.detail for e in db.scalars(select(Event).where(
-            Event.kind == "script_feedback").order_by(Event.created_at.desc()).limit(15)).all()]
+            Event.kind == "script_feedback", Event.project_id == project.id).order_by(Event.created_at.desc()).limit(15)).all()]
     sources = ""
     if research:
         response = client().responses.create(
@@ -60,7 +67,8 @@ def generate_script(project, feedback, research=False):
                   usage=response.usage.model_dump() if response.usage else {})
     return structured((ROOT / "prompts/editorial.md").read_text(), {
         "brief": project.brief, "questions": project.questions, "references": references,
-        "previous_script": project.script, "feedback": feedback,
+        "adapt_selected_reference": bool(reference_id),
+        "previous_script": project.script if not reference_id or feedback else None, "feedback": feedback,
         "editorial_feedback": history, "research": sources,
     }, Script, project.id).model_dump()
 
