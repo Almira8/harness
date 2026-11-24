@@ -184,11 +184,14 @@ def test_selected_reference_is_analyzed_and_other_examples_are_excluded(api, mon
         db.add_all([Reference(id="chosen", asset_id="source", notes="Монтаж"),
                     Reference(id="other", notes="Лимон")])
     received = {}
-    def capture(prompt, data, schema, project_id):
+    def capture(prompt, data, schema, project_id, images=None):
         if schema is worker.agents.ReferenceReview:
+            assert images == [{"type": "input_image", "image_url": "sample"}]
+            assert data["transcript"] == {}
             return schema(enough_evidence=True, faithful=True, correction="")
         received.update(data)
         return Script.model_validate(script())
+    monkeypatch.setattr(worker.agents, "sample_frames", lambda *args: [{"type": "input_image", "image_url": "sample"}])
     monkeypatch.setattr(worker.agents, "structured", capture)
     monkeypatch.setattr(worker.agents, "analyze_asset", lambda asset: ({}, "Монтаж по референсу"))
     assert api.post(f"/api/projects/{identifier}/generate", json={"reference_id": "chosen"}).status_code == 200
@@ -234,7 +237,7 @@ def test_unrelated_reference_drafts_are_withheld(api, monkeypatch):
         db.add(Reference(id="montage", analysis="Исходники и примеры монтажа, правила склеек и субтитров"))
         stored = db.get(Project, identifier)
     drafts = []
-    def model(prompt, data, schema, project_id):
+    def model(prompt, data, schema, project_id, images=None):
         if schema is Script:
             drafts.append(data.copy())
             result = script()
