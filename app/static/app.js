@@ -28,10 +28,18 @@ function addText(parent, tag, content) {
   parent.append(node);
   return node;
 }
+function fileLabel(file) {
+  const kind = file.kind === "image" ? "Фото · 1 кадр" : "Видео · " + Math.round(file.duration) + " с";
+  return kind + " · " + file.name;
+}
+el("file").onchange = () => { if (el("file").files.length) el("saved").value = ""; };
+el("saved").onchange = () => { if (el("saved").value) el("file").value = ""; };
+
 async function selectProject(id) {
   const data = await api("projects/" + id);
   current = data;
   localStorage.setItem("studioProject", id);
+  el("reference-file").textContent = data.reference_file ? fileLabel(data.reference_file) : "";
   const job = data.jobs[0];
   const active = data.jobs.some(j => ["queued","waiting","running","attention"].includes(j.status));
   const scriptStage = ["draft","script_review","script_generating"].includes(data.status);
@@ -97,7 +105,7 @@ function on(id, fn, submit=false) {
 on("reference", async () => {
   if (!el("upload").hidden) return panel();
   const refs = (await api("references")).filter(r => r.asset_id || r.analysis);
-  el("saved").replaceChildren(new Option("Выбрать…",""), ...refs.map(r => new Option(r.notes,r.id)));
+  el("saved").replaceChildren(new Option("Выбрать…",""), ...refs.map(r => new Option(r.file ? fileLabel(r.file) : r.notes,r.id)));
   panel("upload");
 });
 on("uploadForm", async () => {

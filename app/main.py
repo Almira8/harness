@@ -148,9 +148,14 @@ def create_project(body: CreateProject):
 def get_project(project_id: str):
     with session() as db:
         project = project_or_404(db, project_id)
-        return {**serialize(project),
+        jobs = db.scalars(select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc())).all()
+        script_job = next((j for j in jobs if j.kind == "script"), None)
+        ref_id = script_job.payload.get("reference_id") if script_job else None
+        ref = db.get(Reference, ref_id) if ref_id else None
+        source = source_info(db.get(Asset, ref.asset_id)) if ref and ref.asset_id else None
+        return {**serialize(project), "reference_file": source,
                 "assets": [serialize(a) for a in db.scalars(select(Asset).where(Asset.project_id == project_id)).all()],
-                "jobs": [serialize(j) for j in db.scalars(select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc())).all()],
+                "jobs": [serialize(j) for j in jobs],
                 "events": [serialize(e) for e in db.scalars(select(Event).where(Event.project_id == project_id).order_by(Event.created_at.desc()).limit(50)).all()]}
 
 
@@ -309,10 +314,18 @@ def publication_status(project_id: str):
         return enqueue(db, project, "publication_status")
 
 
+def source_info(asset):
+    if asset is None:
+        return None
+    return {"name": asset.name, "duration": asset.duration,
+            "kind": "image" if Path(asset.path).suffix.lower() in {".jpg", ".jpeg"} else "video"}
+
+
 @app.get("/api/references")
 def references():
     with session() as db:
-        return [serialize(r) for r in db.scalars(select(Reference)).all()]
+        rows = db.execute(select(Reference, Asset).outerjoin(Asset, Reference.asset_id == Asset.id))
+        return [{**serialize(r), "file": source_info(asset)} for r, asset in rows]
 
 
 @app.post("/api/references", status_code=201)
