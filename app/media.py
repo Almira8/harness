@@ -50,14 +50,20 @@ def transcribe(path: Path, client):
 
 def sample_frames(path: Path, duration: float):
     frames = []
-    for index in range(1 if duration == 0 else 6):
+    image = path.suffix.lower() in {".jpg", ".jpeg"}
+    for index in range(1 if image or duration == 0 else 6):
         position = min(max(duration - 0.1, 0), duration * index / 6)
-        frame_path = settings.data_dir / "work" / f"{path.stem}-frame-{index}.jpg"
-        try:
-            run(["ffmpeg", "-y", "-ss", str(position), "-i", str(path),
-                 "-frames:v", "1", "-vf", "scale=480:-2", str(frame_path)])
+        seek = ["-ss", str(position)] if position > 0 else []
+        result = subprocess.run([
+            "ffmpeg", "-v", "error", *seek, "-i", str(path), "-map", "0:v:0",
+            "-frames:v", "1", "-vf", "scale=480:-2", "-c:v", "mjpeg",
+            "-f", "image2pipe", "pipe:1",
+        ], capture_output=True, timeout=120)
+        if result.returncode:
+            raise ValueError("Не удалось прочитать изображение или видеокадр. Проверьте исходный файл.")
+        if result.stdout:
             frames.append({"type": "input_image", "image_url": "data:image/jpeg;base64," +
-                           base64.b64encode(frame_path.read_bytes()).decode()})
-        finally:
-            frame_path.unlink(missing_ok=True)
+                           base64.b64encode(result.stdout).decode()})
+    if not frames:
+        raise ValueError("В референсе не удалось прочитать ни одного кадра.")
     return frames

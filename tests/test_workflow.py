@@ -210,3 +210,17 @@ def test_studio_accepts_jpeg_and_starts_script(api, monkeypatch):
     detail = api.get("/api/projects/" + p["id"]).json()
     assert detail["jobs"][0]["payload"]["reference_id"] == ref["id"]
     assert api.get("/api/queue").json() == []
+
+
+def test_frame_analysis_without_shared_work_files(tmp_path, monkeypatch):
+    import base64
+    import subprocess
+    from app.media import sample_frames
+
+    source = tmp_path / "portrait.jpeg"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "color=s=96x128",
+                    "-frames:v", "1", str(source)], check=True)
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "missing")
+    frames = sample_frames(source, 0)
+    assert len(frames) == 1
+    assert base64.b64decode(frames[0]["image_url"].split(",")[1]).startswith(b"\xff\xd8")
