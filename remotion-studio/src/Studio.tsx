@@ -55,20 +55,20 @@ export function BRollOverlayLayer(p: Props) {
   return <>{p.b_roll.map((item,i)=><Timed span={item} key={i}><InsertClip item={item} job={p.jobId}/></Timed>)}</>;
 }
 
-function Card({item,accent}: {item:Callout;accent:string}) {
+function Card({item}: {item:Callout}) {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const progress = spring({frame,fps,config:{damping:17,stiffness:160}});
   return <div style={{position:'absolute',top:'12%',left:'7%',right:'7%',textAlign:'center',
     opacity:Math.min(progress,1),transform:'translateY('+((1-progress)*48)+'px) scale('+(0.94+0.06*progress)+')'}}>
-    <div style={{display:'inline-block',background:'#172b26ed',borderRadius:24,padding:'20px 34px',
-      color:'white',fontSize:60,lineHeight:1.12,fontWeight:750,overflowWrap:'anywhere',borderTop:'5px solid '+accent}}>
+    <div style={{color:'#fff',fontSize:60,lineHeight:1.12,fontWeight:750,
+      overflowWrap:'anywhere',textShadow:'0 2px 5px #000, 0 4px 12px #000b'}}>
       {item.title}{item.subtitle && <div style={{fontSize:35,fontWeight:450,marginTop:10}}>{item.subtitle}</div>}
     </div></div>;
 }
 
 export function TitleCalloutLayer(p: Props) {
-  return <>{p.callouts.map((item,i)=><Timed span={item} key={i}><Card item={item} accent={p.accent}/></Timed>)}</>;
+  return <>{p.callouts.map((item,i)=><Timed span={item} key={i}><Card item={item}/></Timed>)}</>;
 }
 
 export function KaraokeSubtitlesLayer(p: Props) {

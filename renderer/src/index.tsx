@@ -92,11 +92,8 @@ const Graphic: React.FC<{ overlay: Overlay }> = ({ overlay }) => {
         top: 230,
         left: 100,
         right: 100,
-        padding: "48px 52px",
-        borderRadius: 32,
-        background: "#174b3b",
-        color: "#fffef8",
-        boxShadow: "0 28px 80px #174b3b22",
+        color: "#fff",
+        textShadow: "0 2px 5px #000, 0 4px 12px #000b",
         opacity: interpolate(frame, [0, entry], [0, 1], {
           extrapolateRight: "clamp",
         }),
@@ -136,7 +133,6 @@ const Graphic: React.FC<{ overlay: Overlay }> = ({ overlay }) => {
             fontSize: 38,
             lineHeight: 1.3,
             marginTop: 24,
-            color: "#dcebdd",
             overflowWrap: "anywhere",
           }}
         >
