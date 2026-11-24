@@ -185,6 +185,8 @@ def test_selected_reference_is_analyzed_and_other_examples_are_excluded(api, mon
                     Reference(id="other", notes="Лимон")])
     received = {}
     def capture(prompt, data, schema, project_id):
+        if schema is worker.agents.ReferenceReview:
+            return schema(enough_evidence=True, faithful=True, correction="")
         received.update(data)
         return Script.model_validate(script())
     monkeypatch.setattr(worker.agents, "structured", capture)
@@ -224,3 +226,24 @@ def test_frame_analysis_without_shared_work_files(tmp_path, monkeypatch):
     frames = sample_frames(source, 0)
     assert len(frames) == 1
     assert base64.b64decode(frames[0]["image_url"].split(",")[1]).startswith(b"\xff\xd8")
+
+
+def test_unrelated_reference_drafts_are_withheld(api, monkeypatch):
+    identifier = project(api)
+    with session() as db:
+        db.add(Reference(id="montage", analysis="Исходники и примеры монтажа, правила склеек и субтитров"))
+        stored = db.get(Project, identifier)
+    drafts = []
+    def model(prompt, data, schema, project_id):
+        if schema is Script:
+            drafts.append(data.copy())
+            result = script()
+            result["scenes"][0]["narration"] = "Наливаем кофе"
+            return Script.model_validate(result)
+        assert data["draft"]["scenes"][0]["narration"] == "Наливаем кофе"
+        return schema(enough_evidence=True, faithful=False, correction="Верни демонстрацию склеек")
+    monkeypatch.setattr(worker.agents, "structured", model)
+    with pytest.raises(ValueError, match="дважды"):
+        worker.agents.generate_script(stored, "", reference_id="montage")
+    assert len(drafts) == 2
+    assert drafts[1]["required_corrections"] == "Верни демонстрацию склеек"

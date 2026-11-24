@@ -52,7 +52,7 @@ async function selectProject(id) {
     video.src = "/media/" + data.render_path;
     box.append(video);
   }
-  if (data.script) {
+  if (data.script && data.status !== "script_generating") {
     addText(box,"p",data.script.scenes.map(s => s.narration).join(" "));
     const details = document.createElement("details");
     addText(details,"summary","Посекундная раскадровка");

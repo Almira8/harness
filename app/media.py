@@ -51,12 +51,13 @@ def transcribe(path: Path, client):
 def sample_frames(path: Path, duration: float):
     frames = []
     image = path.suffix.lower() in {".jpg", ".jpeg"}
-    for index in range(1 if image or duration == 0 else 6):
-        position = min(max(duration - 0.1, 0), duration * index / 6)
+    count = 1 if image or duration == 0 else min(24, max(6, round(duration / 2)))
+    for index in range(count):
+        position = min(max(duration - 0.1, 0), duration * index / count)
         seek = ["-ss", str(position)] if position > 0 else []
         result = subprocess.run([
             "ffmpeg", "-v", "error", *seek, "-i", str(path), "-map", "0:v:0",
-            "-frames:v", "1", "-vf", "scale=480:-2", "-c:v", "mjpeg",
+            "-frames:v", "1", "-vf", "scale=768:-2", "-c:v", "mjpeg",
             "-f", "image2pipe", "pipe:1",
         ], capture_output=True, timeout=120)
         if result.returncode:
