@@ -171,7 +171,7 @@ def test_screen_evidence_rejects_unrelated_script(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="Не удалось написать сценарий"):
         scriptwriter.write(tmp_path, "studio_dark")
-    assert calls == [ScriptPlan, scriptwriter.TopicCheck, ScriptPlan, scriptwriter.TopicCheck]
+    assert calls == [ScriptPlan, scriptwriter.TopicCheck] * 3
     assert not (tmp_path / "3_script_plan.json").exists()
 
 
@@ -252,3 +252,28 @@ def test_writer_uses_only_meaning_even_when_summary_and_old_plan_quote_source(tm
     monkeypatch.setattr(scriptwriter, "vision", generate)
     scriptwriter.write(tmp_path, "studio_dark", feedback="Сделай объяснение короче.")
     assert quote not in (tmp_path / "3_script_plan.json").read_text()
+
+
+def test_same_reference_cannot_return_previous_narration(tmp_path, monkeypatch):
+    dump(tmp_path / "2_analysis.json", {
+        "core_message": "Монтаж Reels", "hook_mechanism": "Вопрос", "narrative_arc": "Показ процесса",
+        "pacing_and_editing": "Экран", "original_transcript": [],
+    })
+    previous = plan()
+    narration = " ".join(scene.spoken_text for scene in previous.scenes)
+    calls = []
+
+    def generate(prompt, data, schema):
+        assert narration not in str(data)
+        calls.append(schema)
+        if len(calls) == 1:
+            return previous
+        assert "слишком похож" in data["revision"]
+        rewritten = plan()
+        rewritten.scenes[0].spoken_text = "Сначала определим, что зритель должен заметить."
+        return rewritten
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    scriptwriter.write(tmp_path, "studio_dark", previous_narrations=[narration])
+    assert calls == [ScriptPlan, ScriptPlan]
+    assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Сначала")

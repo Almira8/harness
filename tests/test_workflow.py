@@ -180,7 +180,7 @@ def test_selected_reference_is_analyzed_and_other_examples_are_excluded(api, mon
     identifier = project(api)
     monkeypatch.setattr(settings, "openai_api_key", "test-only")
     with session() as db:
-        db.add(Asset(id="source", name="sample", path="uploads/sample.mov", kind="reference", duration=12))
+        db.add(Asset(id="source", name="sample", path="uploads/sample.jpeg", kind="reference", duration=12))
         db.add_all([Reference(id="chosen", asset_id="source", notes="Монтаж"),
                     Reference(id="other", notes="Лимон")])
     received = {}
@@ -296,7 +296,7 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
     def analyze(directory):
         dump(directory / "2_analysis.json", {"core_message": "Субтитры", "topic_supported": True})
 
-    def write(directory, *args):
+    def write(directory, *args, **kwargs):
         dump(directory / "3_script_plan.json", {
             "title": "Субтитры", "caption": "", "music": {"asset": None, "volume": 0},
             "subtitle_style": "minimal", "scenes": [{
@@ -315,9 +315,13 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
     monkeypatch.setattr(studio.extractor, "extract", extract)
     monkeypatch.setattr(studio.analyzer, "analyze", analyze)
     monkeypatch.setattr(studio.scriptwriter, "write", write)
-    result = api.post("/api/studio/from-reference", params={"reference_id": "chosen"}).json()
+    identifier = project(api)
+    result = api.post(f"/api/projects/{identifier}/generate", json={"reference_id": "chosen"}).json()
+    assert not result["payload"].get("pipeline")
     worker.execute(worker.claim_job())
-    seconds = api.get(f"/api/projects/{result['id']}").json()["script"]["seconds"]
+    saved = api.get(f"/api/projects/{identifier}").json()
+    assert saved["jobs"][0]["result"]["script_strategy"] == "concept_rewrite"
+    seconds = saved["script"]["seconds"]
     assert [second["second"] for second in seconds] == [0, 1]
     assert seconds[0]["screen_text"] == ""
     assert seconds[1] == {

@@ -42,6 +42,9 @@ async function selectProject(id) {
   el("reference-file").textContent = data.reference_file ? fileLabel(data.reference_file) : "";
   const job = data.jobs[0];
   const active = data.jobs.some(j => ["queued","waiting","running","attention"].includes(j.status));
+  const scriptJob = data.jobs.find(j => j.kind === "script");
+  el("rewrite").hidden = !scriptJob?.payload.reference_id || data.reference_file?.kind !== "video" || Boolean(data.post_id);
+  el("rewrite").disabled = active;
   const scriptStage = ["draft","script_review","script_generating"].includes(data.status);
   el("agree").disabled = active || !["draft","script_review","script_approved","production","edit_review"].includes(data.status);
   el("revise").disabled = active || !(scriptStage || ["edit_review","video_review"].includes(data.status));
@@ -49,8 +52,8 @@ async function selectProject(id) {
   el("title").textContent = data.script?.title || data.title;
   el("state").textContent = job?.error && ["attention","failed"].includes(job.status) ? job.error :
     (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",pipeline_video:"Готовим сцены, субтитры и монтаж…",edit:"Монтируем…",pipeline_edit:"Пересобираем монтаж…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
-  const evidence = data.jobs.find(j => j.kind === "script")?.result?.reference_evidence;
-  const key = JSON.stringify([id,data.status,data.script,data.render_path,job?.status,evidence]);
+  const evidence = scriptJob?.result?.reference_evidence;
+  const key = JSON.stringify([id,data.status,data.script,data.render_path,job?.status,scriptJob?.id,evidence]);
   if (key === previewKey) return;
   previewKey = key;
   const box = el("preview");
@@ -80,6 +83,9 @@ async function selectProject(id) {
     box.append(details);
   }
   if (data.script && data.status !== "script_generating") {
+    if (scriptJob?.status === "completed" && scriptJob.result?.script_strategy === "concept_rewrite") {
+      addText(box, "small", "Сценарий заново написан по смыслу референса.");
+    }
     const details = document.createElement("details");
     details.open = data.status === "script_review";
     addText(details,"summary","Посекундная раскадровка");
@@ -189,6 +195,12 @@ on("sourceForm",async () => {
   }
   panel();
 },true);
+on("rewrite", async () => {
+  const referenceId = current.jobs.find(job => job.kind === "script")?.payload.reference_id;
+  const project = await api("studio/from-reference?reference_id=" + encodeURIComponent(referenceId) +
+                            "&brief=" + encodeURIComponent(current.brief), {});
+  await refreshList(project.id);
+});
 on("revise",async () => { panel("changes"); el("feedback").focus(); });
 on("changesForm",async () => {
   const feedback = el("feedback").value.trim();

@@ -15,7 +15,17 @@ def word_windows(text, size=6):
     return {tuple(words[i:i + size]) for i in range(len(words) - size + 1)}
 
 
-def write(directory, bg, brief="", feedback="", *, bg_mode=None):
+def repeats_narration(text, other):
+    words = re.findall(r"[^\W_]+", text.casefold().replace("ё", "е"))
+    other_words = re.findall(r"[^\W_]+", other.casefold().replace("ё", "е"))
+    if words and words == other_words:
+        return True
+    phrases = word_windows(text, size=3)
+    shared = phrases & word_windows(other, size=3)
+    return len(shared) >= 3 and len(shared) / len(phrases) >= 0.4
+
+
+def write(directory, bg, brief="", feedback="", *, bg_mode=None, previous_narrations=()):
     analysis = ReferenceAnalysis.model_validate(read(directory / "2_analysis.json"))
     if analysis.topic_supported is False and not feedback.strip():
         raise ValueError("Тему референса не удалось подтвердить. Открой «Текст из референса» и укажи тему через «Запросить правки».")
@@ -76,15 +86,26 @@ def write(directory, bg, brief="", feedback="", *, bg_mode=None):
         data["reference_duration"] = extraction["duration"]
         data["reference_words_per_minute"] = extraction["words_per_minute"]
     verify_topic = analysis.topic_supported is not None
-    for _ in range(2):
+    source_speech = source_texts[0]
+    for _ in range(3):
         plan = vision(prompt,data,ScriptPlan)
-        draft_text = [" ".join(s.spoken_text for s in plan.scenes), plan.title, plan.caption,
+        narration = " ".join(s.spoken_text for s in plan.scenes)
+        draft_text = [narration, plan.title, plan.caption,
                       *(s.overlay_text or "" for s in plan.scenes),
                       *(beat.screen_text for scene in plan.scenes for beat in (scene.screen_beats or []))]
         if any(source_windows & word_windows(text) for text in draft_text):
             data["revision"] = (
                 "В черновике найдено дословное совпадение из шести и более слов. "
                 "Напиши новый хук и перестрой фразы целиком, сохранив тему, шаги и результат."
+            )
+            continue
+        if repeats_narration(narration, source_speech) or (
+            not feedback.strip() and any(repeats_narration(narration, previous) for previous in previous_narrations)
+        ):
+            data["revision"] = (
+                "Черновик слишком похож на исходный или предыдущий текст. "
+                "Зайди через результат вместо прежнего хука, объясни метод с другой точки зрения "
+                "и предложи самостоятельный пример, сохраняя исходную задачу."
             )
             continue
         if verify_topic:

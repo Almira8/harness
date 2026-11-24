@@ -2,7 +2,8 @@
 import shutil
 
 from app.config import settings
-from app.db import Asset, Reference, session
+from app.db import Asset, Job, Reference, session
+from sqlalchemy import select
 from . import analyzer, composer, extractor, scriptwriter, visuals
 from .common import dump, read, workspace
 from schemas.pipeline import ScriptPlan
@@ -16,6 +17,14 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
             return None
         path = settings.data_dir/asset.path
         notes = ref.notes
+        recent = db.scalars(select(Job.result).where(
+            Job.kind == "script", Job.status == "completed",
+            Job.payload["reference_id"].as_string() == reference_id,
+        ).order_by(Job.created_at.desc()).limit(5)).all()
+        previous_narrations = [
+            " ".join(scene.get("narration", "") for scene in script.get("scenes", []))
+            for script in [project.script, *recent] if script
+        ]
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
@@ -35,7 +44,8 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         analysis = read(directory/"2_analysis.json")
         on_evidence({**evidence, "topic": analysis["core_message"],
                      "topic_supported": analysis.get("topic_supported")})
-        scriptwriter.write(directory,"studio_dark",project.brief+"\n"+notes,feedback)
+        scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback,
+                           previous_narrations=previous_narrations)
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     scenes, seconds = [], []
     for scene in plan.scenes:

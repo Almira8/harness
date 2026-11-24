@@ -81,9 +81,12 @@ def process_job(job_id):
                 db.get(Job, job.id).result = dict(reference_evidence)
 
         result = None
-        if job.payload.get("pipeline"):
-            result = studio.prepare(project, job.payload["reference_id"], job.payload.get("feedback",""), persist_evidence)
-        if result is None:
+        reference_id = job.payload.get("reference_id")
+        if reference_id:
+            result = studio.prepare(project, reference_id, job.payload.get("feedback", ""), persist_evidence)
+        if result is not None:
+            reference_evidence["script_strategy"] = "concept_rewrite"
+        else:
             result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
         with session() as db:
             stored = db.get(Project, project.id)
