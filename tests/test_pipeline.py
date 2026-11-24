@@ -158,10 +158,12 @@ def test_screen_evidence_rejects_unrelated_script(tmp_path, monkeypatch):
     calls = []
 
     def generate(prompt, data, schema):
-        assert data["screen_text"][0]["text"] == "Как монтировать Reels с ИИ"
         calls.append(schema)
         if schema is ScriptPlan:
+            assert "screen_text" not in data and "speech" not in data
+            assert "Верни тему монтажа Reels." not in str(data)
             return plan()
+        assert data["screen_text"][0]["text"] == "Как монтировать Reels с ИИ"
         return schema(supported=False, correction="Верни тему монтажа Reels.")
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
@@ -222,3 +224,31 @@ def test_writer_rewrites_copied_hook_and_checks_new_version(tmp_path, monkeypatc
     scriptwriter.write(tmp_path, "studio_dark")
     assert calls == [ScriptPlan, ScriptPlan, scriptwriter.TopicCheck]
     assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Запись готова?")
+
+
+def test_writer_uses_only_meaning_even_when_summary_and_old_plan_quote_source(tmp_path, monkeypatch):
+    quote = "Этот секрет навсегда изменит ваш монтаж"
+    dump(tmp_path / "2_analysis.json", {
+        "core_message": quote + ". Тема — субтитры в редакторе.",
+        "hook_mechanism": quote, "narrative_arc": "Создание дорожки и проверка таймингов.",
+        "pacing_and_editing": quote, "topic_supported": True,
+        "original_transcript": [{"start": 0.0, "end": 4.0, "text": quote}],
+    })
+    previous = plan()
+    previous.scenes[0].spoken_text = quote
+    dump(tmp_path / "3_script_plan.json", previous.model_dump())
+
+    def generate(prompt, data, schema):
+        if schema is ScriptPlan:
+            assert data["meaning"] == {"core_message": "Тема — субтитры в редакторе.",
+                                       "narrative_arc": "Создание дорожки и проверка таймингов."}
+            assert quote not in str(data)
+            assert "previous_plan" not in data
+            assert data["feedback"] == "Сделай объяснение короче."
+            return plan()
+        assert data["speech"][0]["text"] == quote
+        return schema(supported=True, correction="")
+
+    monkeypatch.setattr(scriptwriter, "vision", generate)
+    scriptwriter.write(tmp_path, "studio_dark", feedback="Сделай объяснение короче.")
+    assert quote not in (tmp_path / "3_script_plan.json").read_text()

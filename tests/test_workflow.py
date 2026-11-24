@@ -249,7 +249,8 @@ def test_unrelated_reference_drafts_are_withheld(api, monkeypatch):
     with pytest.raises(ValueError, match="дважды"):
         worker.agents.generate_script(stored, "", reference_id="montage")
     assert len(drafts) == 2
-    assert drafts[1]["required_corrections"] == "Верни демонстрацию склеек"
+    assert "Сохрани задачу, метод и результат" in drafts[1]["required_corrections"]
+    assert "Верни демонстрацию склеек" not in str(drafts[1])
 
 
 def test_revising_pipeline_edit_keeps_video_until_replacement(api, monkeypatch):

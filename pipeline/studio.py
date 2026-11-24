@@ -28,8 +28,10 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         extracted = read(directory/"1_extracted.json")
         evidence = {key: extracted[key] for key in ("transcript", "screen_text", "ocr_warning")}
         on_evidence(evidence)
-        if not (directory/"2_analysis.json").exists():
+        if not (directory/"2_analysis.json").exists() or meta.get("semantic_analysis_version") != 1:
             analyzer.analyze(directory)
+            meta = read(identity)
+            dump(identity, {**meta, "semantic_analysis_version": 1})
         analysis = read(directory/"2_analysis.json")
         on_evidence({**evidence, "topic": analysis["core_message"],
                      "topic_supported": analysis.get("topic_supported")})
