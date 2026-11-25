@@ -25,6 +25,19 @@ def require_reference_text(phrases, screen_text):
         raise ValueError(NO_REFERENCE_TEXT)
 
 
+def extract_audio(ref, output):
+    log = ffmpeg("-i", ref, "-map", "0:a:0", "-vn", "-ac", 1, "-ar", 16000,
+                 "-af", "volumedetect", output)
+    match = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?) dB", log)
+    if match:
+        peak = float(match[1])
+        if -45 <= peak < -8:
+            gain = min(15, -3 - peak)
+            normalized = output.with_name("audio-normalized.wav")
+            ffmpeg("-i", output, "-af", f"volume={gain}dB", normalized)
+            normalized.replace(output)
+
+
 def extract(ref, directory):
     ref = Path(ref).resolve(strict=True)
     metadata = probe(ref)
@@ -63,7 +76,7 @@ def extract(ref, directory):
     has_audio = any(s["codec_type"] == "audio" for s in metadata["streams"])
     if has_audio:
         audio = "audio.wav"
-        ffmpeg("-i", ref, "-vn", "-ac", 1, "-ar", 16000, directory / audio)
+        extract_audio(ref, directory / audio)
         phrases = whisper(directory / audio, "segment")
     samples = [Sample(time=t, frame=by_time[t]) for t in times]
     screen_text, ocr_warning = read_frames(directory, samples)

@@ -315,6 +315,7 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
 
     monkeypatch.setattr(studio.extractor, "extract", extract)
     monkeypatch.setattr(studio.analyzer, "analyze", analyze)
+    monkeypatch.setattr(studio.analyzer, "draft_check", lambda directory: lambda plan: True)
     monkeypatch.setattr(studio.scriptwriter, "write", write)
     identifier = project(api)
     result = api.post(f"/api/projects/{identifier}/generate", json={"reference_id": "chosen"}).json()

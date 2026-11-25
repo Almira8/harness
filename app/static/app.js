@@ -119,7 +119,7 @@ async function selectProject(id) {
   el("agree").disabled = active || !["draft","script_review","script_approved","production","edit_review"].includes(data.status);
   el("revise").disabled = active || !(scriptStage || ["edit_review","video_review"].includes(data.status));
   el("approve").disabled = active || !["video_review","video_approved"].includes(data.status);
-  el("title").textContent = data.script?.title || data.title;
+  el("title").textContent = data.status === "script_generating" ? data.title : data.script?.title || data.title;
   el("state").textContent = job?.error && ["attention","failed"].includes(job.status) ? job.error :
     (active ? ({script:"Разбираем референс и пишем сценарий…", avatar:"Готовим аватар…",pipeline_video:"Готовим сцены, субтитры и монтаж…",edit:"Монтируем…",pipeline_edit:"Пересобираем монтаж…",pipeline_background:"Меняем фон в Remotion…",render:"Собираем MP4…",schedule:"Передаём в расписание…"}[job?.kind] || "Обработка…") : labels[data.status]);
   const evidence = scriptJob?.result?.reference_evidence;

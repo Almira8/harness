@@ -110,7 +110,10 @@ def test_silent_reference_sends_ordered_individual_frames(tmp_path, monkeypatch)
         [ScreenText(time=0, text="Монтаж Reels")], None))
     extractor.extract(reference, tmp_path)
 
-    def vision(prompt, data, schema, images):
+    def vision(prompt, data, schema, images=()):
+        if schema is analyzer.SourceReview:
+            assert data["observations"][0]["kind"] == "screen_text"
+            return schema(supported=True, evidence_index=0)
         times = [sample["time"] for sample in data["samples"]]
         assert times == sorted(times)
         assert times[0] == 0 and times[-1] > 3
@@ -340,3 +343,51 @@ def test_topic_plan_uses_selected_cover_and_humanized_opening(tmp_path, monkeypa
     assert saved["alternative_hooks"][1]["cover_hook_text"] == saved["cover_hook_text"]
     assert saved["cover_hook_duration_sec"] == 2.5
     assert not (tmp_path / "1_extracted.json").exists()
+
+
+def test_reference_rejects_coffee_theme_when_speech_explains_editing(tmp_path, monkeypatch):
+    from pipeline import analyzer
+    from schemas.pipeline import Extraction
+
+    dump(tmp_path / "1_extracted.json", Extraction(
+        duration=4, preview="preview.mp4", audio="audio.wav", contact_sheet="contact_sheet.jpg",
+        transcript=[Phrase(start=0, end=4, text="Перенеси субтитры на дорожку выше и укороти паузы.")],
+        screen_text=[ScreenText(time=0, text="Coffee")], cuts=[], words_per_minute=120,
+    ).model_dump())
+    reviews = []
+
+    def model(prompt, data, schema, images=()):
+        if schema is analyzer.SourceReview:
+            assert data["observations"][0]["kind"] == "speech"
+            assert data["observations"][1]["text"] == "Coffee"
+            text = str(data["candidate"])
+            supported = "кофе" not in text
+            reviews.append(supported)
+            return schema(supported=supported, evidence_index=0 if supported else -1)
+        if not reviews:
+            return schema(**{**idea(), "topic_problem": "Зритель хочет заварить кофе."})
+        return schema(**idea())
+
+    monkeypatch.setattr(analyzer, "vision", model)
+    analyzer.analyze(tmp_path)
+    assert read(tmp_path / "2_analysis.json") == idea()
+    wrong_script = plan()
+    wrong_script.scenes[0].spoken_text = "Сегодня завариваем кофе."
+    assert not analyzer.draft_check(tmp_path)(wrong_script)
+    assert reviews == [False, True, False]
+
+
+def test_quiet_audio_is_raised_before_whisper(tmp_path):
+    from pipeline.extractor import extract_audio
+
+    source = tmp_path / "quiet.mov"
+    ffmpeg("-f", "lavfi", "-i", "sine=frequency=440:r=48000", "-af", "volume=-15dB", "-t", 1, source)
+    result = tmp_path / "audio.wav"
+    extract_audio(source, result)
+    metadata = probe(result)["streams"][0]
+    assert metadata["sample_rate"] == "16000" and metadata["channels"] == 1
+    log = ffmpeg("-i", result, "-af", "volumedetect", "-f", "null", "-")
+    import re
+
+    peak = float(re.search(r"max_volume:\s*(-?[\d.]+) dB", log)[1])
+    assert -24 < peak <= -3

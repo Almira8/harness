@@ -30,10 +30,10 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
-        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 4:
+        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 5:
             for name in ("1_extracted.json","2_analysis.json","3_script_plan.json"):
                 (directory/name).unlink(missing_ok=True)
-            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":4})
+            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":5})
         if not (directory/"1_extracted.json").exists():
             extractor.extract(path,directory)
         extracted = read(directory/"1_extracted.json")
@@ -47,7 +47,8 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         on_evidence({**evidence, "topic": analysis["core_insight"],
                      "topic_supported": bool(analysis["topic_problem"] and analysis["core_insight"])})
         scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback,
-                           needs_rewrite=check_draft(directory, previous_narrations))
+                           needs_rewrite=check_draft(directory, previous_narrations),
+                           check_source=analyzer.draft_check(directory))
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     return review_script(project.id, plan)
 

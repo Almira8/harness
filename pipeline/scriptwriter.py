@@ -128,11 +128,12 @@ def edit_spoken_text(plan, brand_voice):
         retime_speech(scene, scene.spoken_text)
 
 
-def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=None):
+def write(directory, bg, brief="", feedback="", *, bg_mode=None, needs_rewrite=None, check_source=None):
     analysis = ReferenceAnalysis.model_validate(read(directory / "2_analysis.json"))
     if not (analysis.topic_problem and analysis.core_insight) and not feedback.strip():
         raise ValueError("Тему референса не удалось подтвердить. Открой «Текст из референса» и укажи тему через «Запросить правки».")
-    draft_plan(directory, analysis.model_dump(), bg, brief, feedback, bg_mode=bg_mode, needs_rewrite=needs_rewrite)
+    draft_plan(directory, analysis.model_dump(), bg, brief, feedback, bg_mode=bg_mode,
+               needs_rewrite=needs_rewrite, check_source=check_source)
 
 
 HOOK_STYLES = {"auto": "Авто", "pain": "Боль и риск", "mistake": "Ошибка",
@@ -146,7 +147,7 @@ def generate_from_topic(topic: str, notes: str = "", hook_style: str = "auto", *
 
 
 def draft_plan(directory, meaning, bg, brief, feedback, *, bg_mode=None,
-               needs_rewrite=None, topic_mode=False):
+               needs_rewrite=None, topic_mode=False, check_source=None):
     brand_voice = (CONFIG / "brand_voice.md").read_text()
     prompt = ("Ты создаёшь оригинальный ролик на основе абстрактной формулы идеи. "
         "Тебе запрещено пересказывать или синонимизировать чужой текст. "
@@ -229,7 +230,13 @@ def draft_plan(directory, meaning, bg, brief, feedback, *, bg_mode=None,
              "draft": plan.model_dump()}, TopicCheck,
         )
         if check.supported:
-            break
+            if check_source is None or check_source(plan):
+                break
+            data["revision"] = (
+                "Сценарий отклонился от темы референса. Сохрани конкретную задачу и способ из meaning. "
+                "Покажи, как этот способ работает. Новый пример используй лишь для пояснения."
+            )
+            continue
         data["revision"] = "Сохрани исходную задачу и принцип решения. Объясни их через конкретный новый пример."
     else:
         raise ValueError(

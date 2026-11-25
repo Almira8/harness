@@ -56,7 +56,7 @@ def main():
                     if analyzer.needs_analysis(d):
                         analyzer.analyze(d)
                     scriptwriter.write(d, meta["bg"], bg_mode=meta.get("bg_mode"),
-                                       needs_rewrite=check_draft(d))
+                                       needs_rewrite=check_draft(d), check_source=analyzer.draft_check(d))
             elif step == 4:
                 visuals.render(d, meta["aspect"], bg_mode=meta.get("bg_mode"), bg=meta["bg"])
             else:
