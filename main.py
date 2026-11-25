@@ -4,7 +4,6 @@ from uuid import uuid4
 
 from pipeline import analyzer, composer, extractor, scriptwriter, visuals
 from pipeline.common import dump, read, workspace
-from pipeline.originality import check_draft
 from services.background_manager import MODES
 
 
@@ -55,8 +54,7 @@ def main():
                 else:
                     if analyzer.needs_analysis(d):
                         analyzer.analyze(d)
-                    scriptwriter.write(d, meta["bg"], bg_mode=meta.get("bg_mode"),
-                                       needs_rewrite=check_draft(d), check_source=analyzer.draft_check(d))
+                    scriptwriter.write(d, meta["bg"], bg_mode=meta.get("bg_mode"))
             elif step == 4:
                 visuals.render(d, meta["aspect"], bg_mode=meta.get("bg_mode"), bg=meta["bg"])
             else:

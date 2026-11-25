@@ -49,12 +49,10 @@ class Extraction(Record):
 
 
 class ReferenceAnalysis(Record):
-    topic_problem: str
-    core_insight: str
-    hook_formula: str
-    narrative_formula: str
-    visual_rhythm: str
-
+    topic_and_tools: str
+    pain_and_hook: str
+    actionable_steps: list[str]
+    visual_structure: str
 
 class ScreenBeat(Record):
     speech: str

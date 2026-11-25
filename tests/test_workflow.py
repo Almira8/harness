@@ -299,8 +299,8 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
 
     def analyze(directory):
         passes.append("analyze")
-        dump(directory / "2_analysis.json", {"topic_problem": "Речь трудно разобрать", "core_insight": "Субтитры",
-             "hook_formula": "Вопрос", "narrative_formula": "Проблема → решение", "visual_rhythm": "Перебивка"})
+        dump(directory / "2_analysis.json", {"topic_and_tools": "Субтитры", "pain_and_hook": "Речь трудно разобрать",
+             "actionable_steps": ["Включить субтитры"], "visual_structure": "Перебивка"})
 
     def write(directory, *args, **kwargs):
         dump(directory / "3_script_plan.json", {
@@ -320,7 +320,6 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
 
     monkeypatch.setattr(studio.extractor, "extract", extract)
     monkeypatch.setattr(studio.analyzer, "analyze", analyze)
-    monkeypatch.setattr(studio.analyzer, "draft_check", lambda directory: lambda plan: True)
     monkeypatch.setattr(studio.scriptwriter, "write", write)
     identifier = project(api)
     result = api.post(f"/api/projects/{identifier}/generate", json={"reference_id": "chosen"}).json()

@@ -6,7 +6,6 @@ from app.db import Asset, Job, Reference, session
 from sqlalchemy import select
 from . import analyzer, composer, extractor, scriptwriter, visuals
 from .common import digest, dump, read, workspace
-from .originality import check_draft
 from schemas.pipeline import HookOption, ScriptPlan
 from services import background_manager as backgrounds
 
@@ -85,10 +84,6 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
             Job.kind == "script", Job.status == "completed",
             Job.payload["reference_id"].as_string() == reference_id,
         ).order_by(Job.created_at.desc()).limit(5)).all()
-        previous_narrations = [
-            " ".join(scene.get("narration", "") for scene in script.get("scenes", []))
-            for script in [project.script, *(result for _, result in recent)] if script
-        ]
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
@@ -103,11 +98,9 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
         cache_key, evidence, analysis = reference_checkpoints(path, directory, previous_projects, on_evidence)
         dump(identity, {**meta, "semantic_analysis_version": analyzer.ANALYSIS_VERSION,
                         "reference_cache_key": cache_key})
-        on_evidence({**evidence, "topic": analysis["core_insight"],
-                     "topic_supported": bool(analysis["topic_problem"] and analysis["core_insight"])})
-        scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback,
-                           needs_rewrite=check_draft(directory, previous_narrations if not feedback else ()),
-                           check_source=analyzer.draft_check(directory))
+        on_evidence({**evidence, "topic": analysis["topic_and_tools"],
+                     "topic_supported": bool(analysis["topic_and_tools"].strip())})
+        scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback)
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     return review_script(project.id, plan)
 

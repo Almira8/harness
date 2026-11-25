@@ -2,7 +2,7 @@ import shutil
 
 from app.config import settings
 from app.media import probe
-from pipeline import composer, originality, scriptwriter, visuals
+from pipeline import composer, scriptwriter, visuals
 from schemas.pipeline import ReferenceAnalysis
 from pipeline.edit_director import Callout, EditDirector
 from pipeline.common import dump, ffmpeg, read
@@ -18,40 +18,37 @@ def plan():
         "subtitle_style":"highlight","music":{"asset":None,"volume":0.1}, "cover_hook_text":"Где теряется время на монтаже"})
 
 
-def unchanged_spoken_edit(data):
-    return scriptwriter.SpokenEdit.model_validate({"scenes": [
-        {"scene_id": scene["scene_id"], "spoken_text": scene["spoken_text"]}
-        for scene in data["plan"]["scenes"] if scene["scene_id"] in data["requested_scenes"]
-    ]})
-
-
 def idea():
-    return {"topic_problem": "Зрителю трудно разобраться в редакторе.",
-            "core_insight": "Раздельные дорожки делают процесс управляемым.",
-            "hook_formula": "Вопрос о результате", "narrative_formula": "Проблема → решение → пример",
-            "visual_rhythm": "Перебивка на демонстрации"}
+    return {"topic_and_tools": "Монтаж субтитров в редакторе.",
+            "pain_and_hook": "Зритель теряет слова при выключенном звуке.",
+            "actionable_steps": ["Создать отдельную дорожку субтитров", "Проверить тайминг"],
+            "visual_structure": "Перебивка на дорожку в редакторе."}
 
 
-def test_writer_receives_only_semantic_fields(tmp_path, monkeypatch):
+def full_plan():
+    draft = plan()
+    draft.scenes.extend(draft.scenes[-1].model_copy(update={"scene_id": index})
+                        for index in range(3, 6))
+    return draft
+
+
+def test_writer_uses_tools_steps_and_one_call(tmp_path, monkeypatch):
     dump(tmp_path / "2_analysis.json", idea())
     dump(tmp_path / "1_extracted.json", {"transcript": [{"text": "verbatim-source"}]})
-    dump(tmp_path / "3_script_plan.json", {"previous": "old-phrasing"})
+    calls = []
 
-    def generate(prompt, data, schema, **kwargs):
-        assert "verbatim-source" not in str(data) and "old-phrasing" not in str(data)
-        if schema is scriptwriter.SpokenEdit:
-            return unchanged_spoken_edit(data)
+    def generate(prompt, data, schema):
+        calls.append(schema)
         assert data["meaning"] == idea()
-        if schema is scriptwriter.TopicCheck:
-            return schema(supported=True, correction="")
-        assert kwargs["temperature"] == 0.75
-        assert "новый жизненный пример" in prompt
-        return plan()
+        assert "verbatim-source" not in str(data)
+        assert "5–8 логических сцен" in prompt
+        assert "Не заменяй инструменты и шаги бытовыми аналогиями" in prompt
+        return full_plan()
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
-    scriptwriter.write(tmp_path, "studio_dark", feedback="Сделай объяснение короче.",
-                       needs_rewrite=originality.check_draft(tmp_path))
-    assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"] == "Первый пример"
+    scriptwriter.write(tmp_path, "studio_dark")
+    assert calls == [ScriptPlan]
+    assert len(read(tmp_path / "3_script_plan.json")["scenes"]) == 5
 
 
 def test_render_resume_and_cached_director_props(tmp_path,monkeypatch):
@@ -172,28 +169,6 @@ def test_director_cues_fit_timeline_and_available_assets():
     ]
 
 
-def test_abstract_idea_review_rejects_unrelated_script(tmp_path, monkeypatch):
-    import pytest
-
-    dump(tmp_path / "2_analysis.json", idea())
-    calls = []
-
-    def generate(prompt, data, schema, **kwargs):
-        calls.append(schema)
-        if schema is ScriptPlan:
-            assert "Подменённая идея" not in str(data)
-            return plan()
-        if schema is scriptwriter.SpokenEdit:
-            return unchanged_spoken_edit(data)
-        return schema(supported=False, correction="Подменённая идея")
-
-    monkeypatch.setattr(scriptwriter, "vision", generate)
-    with pytest.raises(ValueError, match="Черновик не сохранён"):
-        scriptwriter.write(tmp_path, "studio_dark")
-    assert calls == [ScriptPlan, scriptwriter.SpokenEdit, scriptwriter.TopicCheck] * 2
-    assert not (tmp_path / "3_script_plan.json").exists()
-
-
 def test_reference_without_speech_or_ocr_stops_before_analysis(tmp_path, monkeypatch):
     import pytest
 
@@ -211,110 +186,27 @@ def test_reference_without_speech_or_ocr_stops_before_analysis(tmp_path, monkeyp
     assert not (tmp_path / "1_extracted.json").exists()
 
 
-def test_writer_retries_only_once_for_copied_trigram(tmp_path, monkeypatch):
+def test_invalid_draft_is_not_regenerated(tmp_path, monkeypatch):
     import pytest
 
     dump(tmp_path / "2_analysis.json", idea())
-    dump(tmp_path / "1_extracted.json", {
-        "transcript": [{"text": "Убираем паузы вручную и обозначаем громкие участки отдельным цветом"}],
-    })
-    attempts = []
+    calls = []
 
-    def generate(prompt, data, schema, **kwargs):
-        assert schema is ScriptPlan
-        assert "Убираем паузы вручную" not in str(data)
-        attempts.append(data.get("revision"))
-        draft = plan()
-        draft.scenes[0].spoken_text = "Убираем паузы вручную."
-        return draft
+    def generate(*args):
+        calls.append(1)
+        return plan()
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
-    with pytest.raises(ValueError, match="Черновик не сохранён"):
-        scriptwriter.write(tmp_path, "studio_dark", needs_rewrite=originality.check_draft(tmp_path))
-    assert attempts[0] is None and "новую бытовую ситуацию" in attempts[1]
-    assert len(attempts) == 2
+    with pytest.raises(ValueError, match="от 5 до 8"):
+        scriptwriter.write(tmp_path, "studio_dark")
+    assert calls == [1]
     assert not (tmp_path / "3_script_plan.json").exists()
 
 
-def test_jaccard_rejects_reordered_vocabulary_above_threshold():
-    assert originality.overlap(["субтитры предпросмотр дорожка новый"],
-                               "дорожка эффект предпросмотр субтитры")
-    assert not originality.overlap(["кадр композиция анимация"],
-                                   "звук музыка дорожка кадр")
-
-
-def test_same_reference_cannot_return_previous_narration(tmp_path, monkeypatch):
-    dump(tmp_path / "2_analysis.json", idea())
-    previous = plan()
-    narration = " ".join(scene.spoken_text for scene in previous.scenes)
-    calls = []
-
-    def generate(prompt, data, schema, **kwargs):
-        assert narration not in str(data)
-        calls.append(schema)
-        if schema is scriptwriter.SpokenEdit:
-            return unchanged_spoken_edit(data)
-        if schema is scriptwriter.TopicCheck:
-            return schema(supported=True, correction="")
-        if len(calls) == 1:
-            return previous
-        assert "слишком похож" in data["revision"]
-        rewritten = plan()
-        rewritten.scenes[0].spoken_text = "Сначала определим, что зритель должен заметить."
-        return rewritten
-
-    monkeypatch.setattr(scriptwriter, "vision", generate)
-    scriptwriter.write(tmp_path, "studio_dark", needs_rewrite=originality.check_draft(tmp_path, [narration]))
-    assert calls == [ScriptPlan, ScriptPlan, scriptwriter.SpokenEdit, scriptwriter.TopicCheck]
-    assert read(tmp_path / "3_script_plan.json")["scenes"][0]["spoken_text"].startswith("Сначала")
-
-
-def test_spoken_editor_retries_only_scene_with_cliche_and_preserves_visuals(monkeypatch):
-    from schemas.pipeline import ScreenBeat
-
-    draft = plan()
-    first = draft.scenes[0]
-    first.screen_beats = [
-        ScreenBeat(speech="Первый", action="Ведущая смотрит в камеру", screen_text="", animation=""),
-        ScreenBeat(speech="", action="Крупно экран", screen_text="Пример", animation="Появляется надпись"),
-        ScreenBeat(speech="пример", action="Держим кадр", screen_text="", animation=""),
-    ]
-    original = draft.model_dump()
-    brand_voice = (scriptwriter.CONFIG / "brand_voice.md").read_text()
-    calls = []
-
-    def edit(prompt, data, schema):
-        assert schema is scriptwriter.SpokenEdit
-        assert "Монолог 1" in prompt
-        calls.append(data["requested_scenes"])
-        if len(calls) == 1:
-            return schema(scenes=[
-                scriptwriter.SpokenLine(scene_id=1, spoken_text="НЕ СЕКРЕТ, ЧТО это работает."),
-                scriptwriter.SpokenLine(scene_id=2, spoken_text="Смотри, как это выглядит."),
-            ])
-        return schema(scenes=[scriptwriter.SpokenLine(scene_id=1, spoken_text="Вот как я это делаю.")])
-
-    monkeypatch.setattr(scriptwriter, "vision", edit)
-    scriptwriter.edit_spoken_text(draft, brand_voice)
-    assert calls == [{1: [], 2: []}, {1: ["не секрет что"]}]
-    assert first.spoken_text == "Вот как я это делаю."
-    assert draft.scenes[1].spoken_text == "Смотри, как это выглядит."
-    assert first.screen_beats[1].speech == ""
-    assert " ".join(beat.speech for beat in first.screen_beats).split() == first.spoken_text.split()
-
-    edited = draft.model_dump()
-    for before, after in zip(original["scenes"], edited["scenes"]):
-        before.pop("spoken_text")
-        after.pop("spoken_text")
-        for beat in (before["screen_beats"] or []) + (after["screen_beats"] or []):
-            beat.pop("speech")
-    assert edited == original
-
-
-def test_topic_plan_uses_selected_cover_and_humanized_opening(tmp_path, monkeypatch):
+def test_topic_plan_uses_selected_cover_and_opening(tmp_path, monkeypatch):
     from schemas.pipeline import HookOption
 
-    draft = plan()
+    draft = full_plan()
     draft.scenes[0].spoken_text = "Сложно разобрать слова? Попробуй отдельную дорожку."
     draft.selected_hook = 1
     draft.alternative_hooks = [
@@ -323,29 +215,24 @@ def test_topic_plan_uses_selected_cover_and_humanized_opening(tmp_path, monkeypa
         HookOption(spoken_hook="Титры снова опаздывают?", cover_hook_text="Почему текст приходит слишком поздно"),
     ]
 
-    def generate(prompt, data, schema, **kwargs):
-        if schema is ScriptPlan:
-            assert data["meaning"] == {"topic": "Монтаж", "hook_style": "Ошибка"}
-            return draft
-        if schema is scriptwriter.SpokenEdit:
-            return schema(scenes=[
-                scriptwriter.SpokenLine(scene_id=1, spoken_text="Речь еле слышно? Вынеси голос на отдельную дорожку."),
-                scriptwriter.SpokenLine(scene_id=2, spoken_text="Теперь прибавь громкость."),
-            ], cover_hook_text="Как спасти тихую дорожку")
-        assert data["draft"]["scenes"][0]["spoken_text"].startswith("Речь еле слышно?")
-        return schema(supported=True, correction="")
+    def generate(prompt, data, schema):
+        assert schema is ScriptPlan
+        assert data["meaning"] == {"topic": "Монтаж", "hook_style": "Ошибка"}
+        return draft
 
     monkeypatch.setattr(scriptwriter, "vision", generate)
     scriptwriter.generate_from_topic("Монтаж", hook_style="mistake", directory=tmp_path)
     saved = read(tmp_path / "3_script_plan.json")
     assert saved["selected_hook"] == 1
-    assert saved["alternative_hooks"][1]["spoken_hook"] == "Речь еле слышно?"
+    assert saved["alternative_hooks"][1]["spoken_hook"] == "Сложно разобрать слова?"
     assert saved["alternative_hooks"][1]["cover_hook_text"] == saved["cover_hook_text"]
     assert saved["cover_hook_duration_sec"] == 2.5
     assert not (tmp_path / "1_extracted.json").exists()
 
 
 def test_reference_rejects_coffee_theme_when_speech_explains_editing(tmp_path, monkeypatch):
+    import pytest
+
     from pipeline import analyzer
     from schemas.pipeline import Extraction
 
@@ -364,17 +251,13 @@ def test_reference_rejects_coffee_theme_when_speech_explains_editing(tmp_path, m
             supported = "кофе" not in text
             reviews.append(supported)
             return schema(supported=supported, evidence_index=0 if supported else -1)
-        if not reviews:
-            return schema(**{**idea(), "topic_problem": "Зритель хочет заварить кофе."})
-        return schema(**idea())
+        return schema(**{**idea(), "topic_and_tools": "Зритель хочет заварить кофе."})
 
     monkeypatch.setattr(analyzer, "vision", model)
-    analyzer.analyze(tmp_path)
-    assert read(tmp_path / "2_analysis.json") == idea()
-    wrong_script = plan()
-    wrong_script.scenes[0].spoken_text = "Сегодня завариваем кофе."
-    assert not analyzer.draft_check(tmp_path)(wrong_script)
-    assert reviews == [False, True, False]
+    with pytest.raises(ValueError, match="Тему не удалось подтвердить"):
+        analyzer.analyze(tmp_path)
+    assert not (tmp_path / "2_analysis.json").exists()
+    assert reviews == [False]
 
 
 def test_quiet_audio_is_raised_before_whisper(tmp_path):

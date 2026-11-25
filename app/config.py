@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
     openai_api_key: str = ""
-    openai_model: str = "gpt-6.2-astra"
+    openai_model: str = "gpt-4.1"
     transcription_model: str = "whisper-1"
     transcription_language: str = "ru"
     heygen_api_key: str = ""
