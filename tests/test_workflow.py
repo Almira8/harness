@@ -290,10 +290,15 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
         db.add(Asset(id="source", name="sample.mov", path="uploads/sample.mov", kind="reference", duration=10))
         db.add(Reference(id="chosen", asset_id="source"))
 
+    (settings.data_dir / "uploads" / "sample.mov").write_bytes(b"fixture")
+    passes = []
+
     def extract(source, directory):
+        passes.append("extract")
         dump(directory / "1_extracted.json", {"transcript": [], "screen_text": [], "ocr_warning": None})
 
     def analyze(directory):
+        passes.append("analyze")
         dump(directory / "2_analysis.json", {"topic_problem": "Речь трудно разобрать", "core_insight": "Субтитры",
              "hook_formula": "Вопрос", "narrative_formula": "Проблема → решение", "visual_rhythm": "Перебивка"})
 
@@ -324,6 +329,10 @@ def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
     saved = api.get(f"/api/projects/{identifier}").json()
     assert saved["jobs"][0]["result"]["script_strategy"] == "concept_rewrite"
     seconds = saved["script"]["seconds"]
+    rewritten = api.post("/api/studio/from-reference", params={"reference_id": "chosen"}).json()
+    worker.execute(worker.claim_job())
+    assert api.get(f"/api/projects/{rewritten['id']}").json()["status"] == "script_review"
+    assert passes == ["extract", "analyze"]
     assert [second["second"] for second in seconds] == [0, 1]
     assert seconds[0]["screen_text"] == ""
     assert seconds[1] == {

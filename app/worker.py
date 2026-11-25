@@ -103,7 +103,7 @@ def process_job(job_id):
         result = {**result, **reference_evidence}
     elif job.kind == "pipeline_video":
         raw, output = studio.produce(project, job.id, job.payload.get("background_mode"),
-                                     job.payload.get("background", "default_studio"))
+                                     job.payload.get("background", "default_studio"), job.payload.get("local_edit", False))
         duration = float(probe(settings.data_dir/raw)["format"]["duration"])
         with session() as db:
             stored = db.get(Project,project.id)
@@ -113,7 +113,7 @@ def process_job(job_id):
             if not db.get(Asset,job.id):
                 db.add(Asset(id=job.id, project_id=project.id, name="HeyGen", kind="avatar",
                              path=raw,duration=duration))
-        result = {"path":output}
+        result = {"path": output, "local_edit": job.payload.get("local_edit", False)}
     elif job.kind == "pipeline_edit":
         output = studio.revise_edit(project, job.id, assets, job.payload.get("feedback", ""))
         with session() as db:

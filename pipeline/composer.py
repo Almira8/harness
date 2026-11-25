@@ -9,12 +9,21 @@ from app.config import ROOT
 from app.media import probe
 from schemas.pipeline import Phrase, ScriptPlan
 from .common import digest, dump, ffmpeg, read, whisper
-from .edit_director import BackgroundCue, CoverHook, RenderProps, Word, direct
+from .edit_director import BackgroundCue, Callout, CoverHook, EditDirector, RenderProps, Word, Zoom, direct
 from services.background_manager import local_asset
 
 STUDIO = ROOT / "remotion-studio"
 IMAGE = {".jpg",".jpeg",".png",".webp"}
 VIDEO = {".mov",".mp4",".webm",".m4v"}
+
+
+def preflight(plan):
+    if not all(shutil.which(binary) for binary in ("ffmpeg", "ffprobe", "npx")):
+        raise ValueError("Для монтажа нужны ffmpeg, ffprobe и npx")
+    if not (STUDIO / "node_modules" / ".bin" / "remotion").is_file():
+        raise ValueError("Не установлены зависимости Remotion. Пересобери контейнер worker.")
+    if plan.music.asset:
+        local_asset(plan.music.asset)
 
 
 def source(directory, name):
@@ -126,12 +135,49 @@ def transparent_avatar(directory, raw, raw_id):
     return path
 
 
-def prepare(directory, raw, raw_id, duration, feedback="", backgrounds=()):
+def local_timeline(plan, duration):
+    script_words = [word for scene in plan.scenes for word in scene.spoken_text.split()]
+    if not script_words:
+        raise ValueError("Для монтажа нужен утверждённый текст реплик")
+    weights = [max(3, len(word.strip(".,!?…"))) for word in script_words]
+    total = sum(weights)
+    words, elapsed = [], 0
+    for word, weight in zip(script_words, weights):
+        start = duration * elapsed / total
+        elapsed += weight
+        words.append(Word(word=word, startSec=start, endSec=duration * elapsed / total))
+    cuts = EditDirector(zoom_events=[], callouts=[], b_roll=[])
+    offset = 0
+    scale = 1.0
+    for scene in plan.scenes:
+        length = len(scene.spoken_text.split())
+        if not length:
+            continue
+        start = words[offset].startSec
+        offset += length
+        end = words[offset - 1].endSec
+        next_scale = 1.1 if scene.camera_framing == "closeup" else 1.0
+        if scale != next_scale:
+            cuts.zoom_events.append(Zoom(startSec=start, endSec=min(end, start + 0.5),
+                                        fromScale=scale, toScale=next_scale))
+            scale = next_scale
+        visible_start = max(start, plan.cover_hook_duration_sec if plan.cover_hook_text else 0)
+        if scene.overlay_text and end - visible_start >= 0.12:
+            cuts.callouts.append(Callout(startSec=visible_start, endSec=min(end, visible_start + 2.5),
+                                        title=scene.overlay_text[:140], subtitle=None))
+    return words, cuts
+
+
+def prepare(directory, raw, raw_id, duration, feedback="", backgrounds=(), local_edit=False):
     plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
-    words = words_for(directory,raw,raw_id)
-    catalog = asset_catalog(directory)
-    previous = read(directory / "remotion_props.json") if feedback and (directory / "remotion_props.json").exists() else None
-    cuts = direct(plan, words, duration, catalog, feedback, previous)
+    if local_edit:
+        words, cuts = local_timeline(plan, duration)
+        catalog = []
+    else:
+        words = words_for(directory, raw, raw_id)
+        catalog = asset_catalog(directory)
+        previous = read(directory / "remotion_props.json") if feedback and (directory / "remotion_props.json").exists() else None
+        cuts = direct(plan, words, duration, catalog, feedback, previous)
     cuts.zoom_events = normalize_cues(cuts.zoom_events, duration)
     cuts.callouts = normalize_cues(cuts.callouts, duration)
     cuts.b_roll = normalize_cues(cuts.b_roll, duration, {a["src"]: a for a in catalog})
@@ -192,7 +238,7 @@ def render(directory, props, props_path=None):
     return output
 
 
-def compose(directory, render_only=False, feedback=""):
+def compose(directory, render_only=False, feedback="", local_edit=False):
     directory = directory.resolve()
     raw = directory/"4_heygen_raw.mp4"
     path = directory/"remotion_props.json"
@@ -207,13 +253,14 @@ def compose(directory, render_only=False, feedback=""):
         props = RenderProps.model_validate(read(path))
     else:
         raw_id = digest(raw)
-        inputs = {"edit_version":3,"raw":raw_id,"feedback":feedback,"backgrounds":backgrounds,"script":digest(directory/"3_script_plan.json"),
-                  "broll":[[a["src"], digest(source(directory, a["src"]))] for a in asset_catalog(directory)]}
+        inputs = {"edit_version":3,"raw":raw_id,"local_edit":local_edit,"feedback":feedback,"backgrounds":backgrounds,"script":digest(directory/"3_script_plan.json"),
+                  "broll":[] if local_edit else [[a["src"], digest(source(directory, a["src"]))]
+                                                  for a in asset_catalog(directory)]}
         if path.exists() and manifest.exists() and read(manifest)==inputs:
             props = RenderProps.model_validate(read(path))
         else:
             duration = float(probe(raw)["format"]["duration"])
-            props = prepare(directory, raw, raw_id, duration, feedback, backgrounds)
+            props = prepare(directory, raw, raw_id, duration, feedback, backgrounds, local_edit)
             validate_cues(props,duration,directory)
             dump(path,props.model_dump())
             dump(manifest,inputs)

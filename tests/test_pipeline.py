@@ -391,3 +391,19 @@ def test_quiet_audio_is_raised_before_whisper(tmp_path):
 
     peak = float(re.search(r"max_volume:\s*(-?[\d.]+) dB", log)[1])
     assert -24 < peak <= -3
+
+
+def test_local_edit_keeps_cover_and_uses_approved_words_without_api(tmp_path, monkeypatch):
+    draft = plan()
+    dump(tmp_path / "3_script_plan.json", draft.model_dump())
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Локальный монтаж обратился к платному API")
+
+    monkeypatch.setattr(composer, "words_for", unexpected)
+    monkeypatch.setattr(composer, "direct", unexpected)
+    props = composer.prepare(tmp_path, tmp_path / "avatar.mp4", "raw", 8, local_edit=True)
+    assert " ".join(word.word for word in props.words) == "Первый пример Второй пример"
+    assert props.words[0].startSec == 0 and props.words[-1].endSec == 8
+    assert props.coverHook.startSec == 0 and props.coverHook.endSec == 2.5
+    assert props.zoom_events and props.callouts and not props.b_roll

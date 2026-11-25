@@ -64,13 +64,18 @@ def analyze(directory):
             " В видео нет голоса, опирайся ТОЛЬКО на текст с кадров (OCR) и визуальный ряд, "
             "не придумывай несуществующий диалог."
         )
-    frames = [directory / sample.frame for sample in evidence.samples]
+    # OCR and transcript cover the full timeline. Use representative images for composition.
+    samples = evidence.samples
+    if len(samples) > 8:
+        samples = [samples[round(index * (len(samples) - 1) / 7)] for index in range(8)]
+    frames = [directory / sample.frame for sample in samples]
+    payload = evidence.model_dump(exclude={"preview", "contact_sheet"})
+    payload["image_times"] = [sample.time for sample in samples]
     sources = [" ".join(phrase.text for phrase in evidence.transcript)]
     sources += [line for item in evidence.screen_text for line in item.text.splitlines()]
     source_ngrams = set().union(*(ngrams(tokens(text), size=5) for text in sources))
     for _ in range(2):
-        analysis = vision(prompt, evidence.model_dump(exclude={"preview", "contact_sheet"}),
-                          ReferenceAnalysis, frames or [directory / evidence.contact_sheet])
+        analysis = vision(prompt, payload, ReferenceAnalysis, frames or [directory / evidence.contact_sheet])
         analysis_tokens = [tokens(value) for value in analysis.model_dump().values()]
         if any(source_ngrams & ngrams(words, size=5) for words in analysis_tokens):
             prompt += " В предыдущей выжимке было дословное совпадение. Переформулируй её на уровне идей."

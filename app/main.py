@@ -263,15 +263,20 @@ def production(project_id: str, body: ProductionInput):
             if not all((settings.heygen_api_key, settings.heygen_avatar_id, settings.heygen_voice_id)):
                 raise HTTPException(422, "Аватар ещё не настроен. Заполните параметры HeyGen в .env")
             auto_render = body.auto_render and body.mode == "avatar"
-            if auto_render and not settings.openai_api_key:
-                raise HTTPException(422, "Для автоматического монтажа нужен OPENAI_API_KEY")
+            if body.local_edit and (not auto_render or
+                    not (body.background_mode or (project.script or {}).get("pipeline_job_id"))):
+                raise HTTPException(422, "Для локального монтажа выбери аватар и укажи фон")
+            if body.local_edit and body.background_mode in ("auto_scene", "ai_generate"):
+                raise HTTPException(422, "Для монтажа без OpenAI выбери готовый фон или хромакей")
+            if auto_render and not body.local_edit and not settings.openai_api_key:
+                raise HTTPException(422, "Для выбранного монтажа или фона нужен OPENAI_API_KEY")
             if body.background_mode and not auto_render:
                 raise HTTPException(422, "Для смены фона выберите аватар и автоматический монтаж")
             if body.background_mode in ("preset", "auto_scene", "greenscreen"):
                 validate_background(db, body.background, local_only=body.background_mode == "greenscreen")
             kind = "pipeline_video" if auto_render and (body.background_mode or (project.script or {}).get("pipeline_job_id")) else "avatar"
             enqueue(db, project, kind, {"auto_render": auto_render, "background_mode": body.background_mode,
-                                        "background": body.background})
+                                        "background": body.background, "local_edit": body.local_edit})
         project.mode, project.status = body.mode, "production"
         event(db, project.id, "production_selected", mode=body.mode)
         return serialize(project)

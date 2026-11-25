@@ -21,7 +21,7 @@ class ReferenceReview(StrictModel):
 def client():
     if not settings.openai_api_key:
         raise ValueError("Добавьте OPENAI_API_KEY в .env и перезапустите сервер и worker")
-    return OpenAI(api_key=settings.openai_api_key, timeout=240, max_retries=1)
+    return OpenAI(api_key=settings.openai_api_key, timeout=240, max_retries=0)
 
 
 def text_response(response):

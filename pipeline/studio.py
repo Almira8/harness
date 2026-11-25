@@ -5,10 +5,72 @@ from app.config import settings
 from app.db import Asset, Job, Reference, session
 from sqlalchemy import select
 from . import analyzer, composer, extractor, scriptwriter, visuals
-from .common import dump, read, workspace
+from .common import digest, dump, read, workspace
 from .originality import check_draft
 from schemas.pipeline import HookOption, ScriptPlan
 from services import background_manager as backgrounds
+
+
+REFERENCE_EXTRACTION_VERSION = 5
+
+
+def copy_extraction(source, target):
+    manifest = source / "1_extracted.json"
+    extraction = read(manifest)
+    files = {extraction.get(field) for field in ("audio", "preview", "contact_sheet")}
+    files.update(sample["frame"] for sample in extraction.get("samples", []))
+    files.update(cut["frame"] for cut in extraction.get("cuts", []))
+    for name in files - {None, ""}:
+        original = composer.source(source, name)
+        destination = target / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original, destination)
+    dump(target / manifest.name, extraction)
+
+
+def reference_checkpoints(path, directory, previous_projects, on_evidence):
+    cache_key = backgrounds.fingerprint([
+        digest(path), REFERENCE_EXTRACTION_VERSION, settings.transcription_model, settings.transcription_language,
+    ])
+    with workspace(f"reference-{cache_key}") as cache:
+        extracted_path = cache / "1_extracted.json"
+        checked_path = cache / "2_analysis.json"
+        version_file = cache / "analysis_version.json"
+        for old_directory in [directory, *previous_projects]:
+            identity = old_directory / "job.json"
+            if extracted_path.exists() and checked_path.exists():
+                break
+            if not identity.exists() or not (old_directory / "1_extracted.json").exists():
+                continue
+            previous = read(identity)
+            if (previous.get("ref") != str(path)
+                    or previous.get("reference_analysis_version") != REFERENCE_EXTRACTION_VERSION
+                    or previous.get("reference_cache_key") not in {None, cache_key}):
+                continue
+            if not extracted_path.exists():
+                copy_extraction(old_directory, cache)
+            if (not checked_path.exists() and previous.get("semantic_analysis_version") == analyzer.ANALYSIS_VERSION
+                    and not analyzer.needs_analysis(old_directory)):
+                dump(checked_path, read(old_directory / checked_path.name))
+                dump(version_file, {"version": analyzer.ANALYSIS_VERSION})
+        if not extracted_path.exists():
+            extractor.extract(path, cache)
+        extracted = read(extracted_path)
+        project_extraction = directory / extracted_path.name
+        project_identity = directory / "job.json"
+        current = read(project_identity) if project_identity.exists() else {}
+        if not project_extraction.exists() or current.get("reference_cache_key") not in {None, cache_key}:
+            copy_extraction(cache, directory)
+        dump(project_identity, {**current, "reference_cache_key": cache_key})
+        evidence = {key: extracted[key] for key in ("transcript", "screen_text", "ocr_warning")}
+        on_evidence(evidence)
+        if (analyzer.needs_analysis(cache) or not version_file.exists()
+                or read(version_file).get("version") != analyzer.ANALYSIS_VERSION):
+            analyzer.analyze(cache)
+            dump(version_file, {"version": analyzer.ANALYSIS_VERSION})
+        analysis = read(checked_path)
+        dump(directory / checked_path.name, analysis)
+        return cache_key, evidence, analysis
 
 
 def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
@@ -19,35 +81,32 @@ def prepare(project, reference_id, feedback, on_evidence=lambda evidence: None):
             return None
         path = settings.data_dir/asset.path
         notes = ref.notes
-        recent = db.scalars(select(Job.result).where(
+        recent = db.execute(select(Job.project_id, Job.result).where(
             Job.kind == "script", Job.status == "completed",
             Job.payload["reference_id"].as_string() == reference_id,
         ).order_by(Job.created_at.desc()).limit(5)).all()
         previous_narrations = [
             " ".join(scene.get("narration", "") for scene in script.get("scenes", []))
-            for script in [project.script, *recent] if script
+            for script in [project.script, *(result for _, result in recent)] if script
         ]
     with workspace(project.id) as directory:
         identity = directory/"job.json"
         meta = read(identity) if identity.exists() else {}
-        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != 5:
-            for name in ("1_extracted.json","2_analysis.json","3_script_plan.json"):
-                (directory/name).unlink(missing_ok=True)
-            dump(identity,{"ref":str(path),"bg":"studio_dark","aspect":"9:16","reference_analysis_version":5})
-        if not (directory/"1_extracted.json").exists():
-            extractor.extract(path,directory)
-        extracted = read(directory/"1_extracted.json")
-        evidence = {key: extracted[key] for key in ("transcript", "screen_text", "ocr_warning")}
-        on_evidence(evidence)
-        if analyzer.needs_analysis(directory) or meta.get("semantic_analysis_version") != analyzer.ANALYSIS_VERSION:
-            analyzer.analyze(directory)
-            meta = read(identity)
-            dump(identity, {**meta, "semantic_analysis_version": analyzer.ANALYSIS_VERSION})
-        analysis = read(directory/"2_analysis.json")
+        if meta.get("ref") != str(path) or meta.get("reference_analysis_version") != REFERENCE_EXTRACTION_VERSION:
+            for name in ("1_extracted.json", "2_analysis.json", "3_script_plan.json"):
+                (directory / name).unlink(missing_ok=True)
+            meta = {"ref": str(path), "bg": "studio_dark", "aspect": "9:16",
+                    "reference_analysis_version": REFERENCE_EXTRACTION_VERSION}
+            dump(identity, meta)
+        previous_projects = [settings.pipeline_workspace / identifier for identifier, _ in recent
+                             if identifier and identifier != project.id]
+        cache_key, evidence, analysis = reference_checkpoints(path, directory, previous_projects, on_evidence)
+        dump(identity, {**meta, "semantic_analysis_version": analyzer.ANALYSIS_VERSION,
+                        "reference_cache_key": cache_key})
         on_evidence({**evidence, "topic": analysis["core_insight"],
                      "topic_supported": bool(analysis["topic_problem"] and analysis["core_insight"])})
         scriptwriter.write(directory, "studio_dark", project.brief + "\n" + notes, feedback,
-                           needs_rewrite=check_draft(directory, previous_narrations),
+                           needs_rewrite=check_draft(directory, previous_narrations if not feedback else ()),
                            check_source=analyzer.draft_check(directory))
         plan = ScriptPlan.model_validate(read(directory/"3_script_plan.json"))
     return review_script(project.id, plan)
@@ -163,7 +222,7 @@ def publish_cover(directory, output):
         shutil.copyfile(cover, (settings.data_dir / output).with_suffix(".jpg"))
 
 
-def produce(project, job_id, bg_mode=None, bg="default_studio"):
+def produce(project, job_id, bg_mode=None, bg="default_studio", local_edit=False):
     with workspace(project.id) as directory:
         presets = None
         plan_path = directory / "3_script_plan.json"
@@ -180,8 +239,9 @@ def produce(project, job_id, bg_mode=None, bg="default_studio"):
                     scriptwriter.assign_backgrounds(plan, presets, bg)
                     dump(choices, plan.model_dump())
             dump(plan_path, plan.model_dump())
+        composer.preflight(ScriptPlan.model_validate(read(plan_path)))
         raw = visuals.render(directory, studio_title=project.title, bg_mode=bg_mode, bg=bg, presets=presets)
-        final = composer.compose(directory)
+        final = composer.compose(directory, local_edit=local_edit)
         raw_path = f"uploads/{job_id}-avatar.mp4"
         output = f"renders/{job_id}.mp4"
         shutil.copyfile(raw, settings.data_dir/raw_path)

@@ -133,6 +133,9 @@ async function selectProject(id) {
     video.controls = true;
     video.src = "/media/" + data.render_path;
     box.append(video);
+    if (data.jobs.find(item => item.result?.path === data.render_path)?.result.local_edit) {
+      addText(box, "p", "Простой монтаж. Тайминг субтитров рассчитан по тексту сценария.");
+    }
     if (data.cover_path) {
       const link = addText(box, "a", "Скачать обложку JPG");
       link.href = "/media/" + data.cover_path;
@@ -295,6 +298,7 @@ on("agree",async () => {
   }
   el("sourceForm").reset();
   el("avatar-background").hidden = false;
+  el("local-edit-option").hidden = false;
   el("background-options").hidden = true;
   el("footage").hidden = true;
   panel("source");
@@ -302,6 +306,7 @@ on("agree",async () => {
 el("mode").onchange = () => {
   el("footage").hidden = el("mode").value !== "own";
   el("avatar-background").hidden = el("mode").value !== "avatar";
+  el("local-edit-option").hidden = el("mode").value !== "avatar";
 };
 el("background-mode").onchange = () => run(async () => {
   const mode = el("background-mode").value;
@@ -324,6 +329,13 @@ on("sourceForm",async () => {
   const mode = el("mode").value;
   if (mode === "own" && !el("footage").files.length) throw Error("Выбери свою видеозапись.");
   const body = {mode, auto_render: mode === "avatar"};
+  if (mode === "avatar" && el("local-edit").checked) {
+    body.local_edit = true;
+    if (["auto_scene", "ai_generate"].includes(el("background-mode").value)) {
+      throw Error("Для монтажа без OpenAI выбери готовый фон или хромакей.");
+    }
+    if (!el("background-mode").value && !current.script?.pipeline_job_id) body.background_mode = "preset";
+  }
   if (mode === "avatar" && el("background-mode").value) {
     body.background_mode = el("background-mode").value;
     if (["preset", "greenscreen"].includes(body.background_mode)) {
