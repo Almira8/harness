@@ -44,6 +44,12 @@ def download_video(url, destination):
     raise ValueError("Слишком много перенаправлений при получении видео")
 
 
+class HeyGenHTTPError(ValueError):
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__(f"HeyGen вернул HTTP {status_code}. Проверьте доступ и настройки API")
+
+
 def heygen_request(method, path, payload=None, idempotency_key=None):
     if not settings.heygen_api_key:
         raise ValueError("Добавьте HEYGEN_API_KEY в .env")
@@ -53,7 +59,7 @@ def heygen_request(method, path, payload=None, idempotency_key=None):
     response = httpx.request(method, "https://api.heygen.com/v3/" + path,
                             headers=headers, json=payload, timeout=120)
     if not response.is_success:
-        raise ValueError(f"HeyGen вернул HTTP {response.status_code}. Проверьте доступ и настройки API")
+        raise HeyGenHTTPError(response.status_code)
     data = response.json()
     return data.get("data", data)
 

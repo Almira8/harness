@@ -13,3 +13,7 @@ remotion-studio/public/assets/
 remotion-studio/build/
 remotion-studio/out/
 /remotion-studio/node_modules
+
+# Personal background media
+assets/backgrounds/*
+!assets/backgrounds/README.md

@@ -1,6 +1,8 @@
 import math
 from typing import Literal
 
+from schemas.pipeline import CoverText, HookStyle
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -14,6 +16,7 @@ class Second(StrictModel):
     action: str
     animation: str
     sound: str
+    screen_text: str | None = None
 
 
 class Scene(StrictModel):
@@ -28,7 +31,21 @@ class Scene(StrictModel):
     materials: list[str]
 
 
+class TopicInput(StrictModel):
+    topic: str = Field(min_length=1, max_length=200)
+    notes: str = Field(default="", max_length=10000)
+    hook_style: HookStyle = "auto"
+
+
+class ScriptReviewInput(StrictModel):
+    cover_hook_text: CoverText
+    scenes: list[str] = Field(min_length=1, max_length=50)
+    selected_hook: int | None = Field(default=None, ge=0, le=2)
+
+
 class Script(StrictModel):
+    cover_hook_text: CoverText | None = None
+    cover_hook_duration_sec: float = Field(default_factory=lambda: 2.5, ge=0.25, le=10)
     title: str
     hook_options: list[str] = Field(min_length=3, max_length=8)
     rationale: str
@@ -123,7 +140,14 @@ class EditInput(StrictModel):
 
 class ProductionInput(StrictModel):
     auto_render: bool = False
+    local_edit: bool = False
     mode: Literal["own", "avatar", "mixed"]
+    background_mode: Literal["preset", "auto_scene", "ai_generate", "greenscreen"] | None = None
+    background: str = Field(default="default_studio", max_length=300)
+
+
+class BackgroundInput(StrictModel):
+    background: str = Field(min_length=1, max_length=300)
 
 
 class GenerateClip(StrictModel):

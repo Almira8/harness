@@ -1,4 +1,6 @@
 import React from 'react';
+import {CoverHookLayer, type CoverHook} from './CoverHookLayer';
+import {BackgroundLayer, type BackgroundCue} from './BackgroundLayer';
 import {getVideoMetadata} from '@remotion/media-utils';
 import {AbsoluteFill, Audio, Composition, Easing, Img, OffthreadVideo, Sequence,
   interpolate, spring, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
@@ -9,6 +11,8 @@ type Insert = Span & {src: string; animation: 'fade' | 'slide_up'};
 type Callout = Span & {title: string; subtitle: string | null};
 type Word = Span & {word: string};
 type Props = {
+  backgrounds?: BackgroundCue[]; transparentAvatar?: boolean;
+  coverHook?: CoverHook | null;
   jobId: string; avatar: string; zoom_events: Zoom[]; b_roll: Insert[];
   callouts: Callout[]; words: Word[]; music: string | null; volume: number;
   accent: string; subtitle_style: 'highlight' | 'minimal';
@@ -25,7 +29,7 @@ export function BaseAvatarLayer(p: Props) {
     scale = interpolate(t,[z.startSec,z.endSec],[z.fromScale,z.toScale],
       {...clamp,easing:Easing.out(Easing.ease)});
   }
-  return <AbsoluteFill style={{overflow:'hidden'}}><OffthreadVideo src={media(p.jobId,p.avatar)}
+  return <AbsoluteFill style={{overflow:'hidden'}}><OffthreadVideo src={media(p.jobId,p.avatar)} transparent={p.transparentAvatar}
     style={{...cover,transform:'scale('+scale+')'}}/></AbsoluteFill>;
 }
 
@@ -53,32 +57,37 @@ export function BRollOverlayLayer(p: Props) {
   return <>{p.b_roll.map((item,i)=><Timed span={item} key={i}><InsertClip item={item} job={p.jobId}/></Timed>)}</>;
 }
 
-function Card({item,accent}: {item:Callout;accent:string}) {
+function Card({item}: {item:Callout}) {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const progress = spring({frame,fps,config:{damping:17,stiffness:160}});
   return <div style={{position:'absolute',top:'12%',left:'7%',right:'7%',textAlign:'center',
     opacity:Math.min(progress,1),transform:'translateY('+((1-progress)*48)+'px) scale('+(0.94+0.06*progress)+')'}}>
-    <div style={{display:'inline-block',background:'#172b26ed',borderRadius:24,padding:'20px 34px',
-      color:'white',fontSize:60,lineHeight:1.12,fontWeight:750,overflowWrap:'anywhere',borderTop:'5px solid '+accent}}>
+    <div style={{color:'#fff',fontSize:60,lineHeight:1.12,fontWeight:750,
+      overflowWrap:'anywhere',textShadow:'0 2px 5px #000, 0 4px 12px #000b'}}>
       {item.title}{item.subtitle && <div style={{fontSize:35,fontWeight:450,marginTop:10}}>{item.subtitle}</div>}
     </div></div>;
 }
 
 export function TitleCalloutLayer(p: Props) {
-  return <>{p.callouts.map((item,i)=><Timed span={item} key={i}><Card item={item} accent={p.accent}/></Timed>)}</>;
+  return <>{p.callouts.map((item,i)=><Timed span={item} key={i}><Card item={item}/></Timed>)}</>;
 }
 
 export function KaraokeSubtitlesLayer(p: Props) {
   const t = useCurrentFrame()/useVideoConfig().fps;
   const groups = React.useMemo(() => {
     const result: Word[][] = [];
-    for (let start = 0; start < p.words.length;) {
-      const remaining = p.words.length - start;
-      const count = [5,6,9].includes(remaining) ? 3 : Math.min(4, remaining);
-      result.push(p.words.slice(start, start + count));
-      start += count;
+    let group: Word[] = [];
+    for (const word of p.words) {
+      const last = group.at(-1);
+      if (last && (group.length >= 4 || word.startSec - last.endSec > 0.35 ||
+          word.endSec - group[0].startSec > 2 || /[.!?…]$/.test(last.word))) {
+        result.push(group);
+        group = [];
+      }
+      group.push(word);
     }
+    if (group.length) result.push(group);
     return result;
   }, [p.words]);
   const group = groups.find(g => t >= g[0].startSec && t < g[g.length - 1].endSec);
@@ -100,9 +109,17 @@ export function AudioLayer(p: Props) {
 }
 
 function MainComposition(p: Props) {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const coverVisible = p.coverHook && frame < Math.max(1, Math.round(p.coverHook.endSec * fps));
   return <AbsoluteFill style={{background:'#101816',fontFamily:'DejaVu Sans, sans-serif'}}>
-    <BaseAvatarLayer {...p}/><BRollOverlayLayer {...p}/><TitleCalloutLayer {...p}/>
+    <BackgroundLayer cues={p.backgrounds ?? []} jobId={p.jobId}/>
+    <BaseAvatarLayer {...p}/>
+    <AbsoluteFill style={{visibility: coverVisible ? 'hidden' : 'visible'}}>
+      <BRollOverlayLayer {...p}/><TitleCalloutLayer {...p}/>
+    </AbsoluteFill>
     <KaraokeSubtitlesLayer {...p}/><AudioLayer {...p}/>
+    {coverVisible && p.coverHook && <CoverHookLayer text={p.coverHook.text}/>}
   </AbsoluteFill>;
 }
 
@@ -111,7 +128,9 @@ const defaults:Props = {jobId:'demo',avatar:'avatar.mp4',zoom_events:[],callouts
 export function Studio() {
   return <Composition id="MainComposition" component={MainComposition} fps={30} width={1080}
     height={1920} durationInFrames={30} defaultProps={defaults} calculateMetadata={async ({props})=>{
-      const {durationInSeconds} = await getVideoMetadata(media(props.jobId,props.avatar));
-      return {durationInFrames:Math.max(1,Math.ceil(durationInSeconds*30))};
+      const {durationInSeconds, width, height} = await getVideoMetadata(media(props.jobId,props.avatar));
+      const landscape = width > height;
+      return {width: landscape ? 1920 : 1080, height: landscape ? 1080 : 1920,
+        durationInFrames:Math.max(1,Math.ceil(durationInSeconds*30))};
     }}/>;
 }

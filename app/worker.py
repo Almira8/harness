@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from sqlalchemy import and_, or_, select, update
 
-from pipeline import studio
+from pipeline import composer, studio
 from . import agents, providers
 from .config import ROOT, settings
 from .db import Asset, Job, Project, Reference, event, init_db, new_id, now, session
@@ -47,6 +47,9 @@ def render(project, assets, job_id):
     plan = EditPlan.model_validate(project.edit)
     validate_assets(plan, {a.id: a for a in assets})
     props = plan.model_dump()
+    if cover := (project.script or {}).get("cover_hook_text"):
+        props["coverHook"] = {"text": cover, "startSec": 0,
+                              "endSec": project.script.get("cover_hook_duration_sec", 2.5)}
     props["assets"] = {a.id: settings.media_base_url.rstrip("/") + "/media/" + a.path for a in assets}
     props_path = settings.data_dir / "work" / f"{job_id}.json"
     output = settings.data_dir / "renders" / f"{project.id}-{job_id}.mp4"
@@ -61,6 +64,7 @@ def render(project, assets, job_id):
     video = next(stream for stream in metadata["streams"] if stream["codec_type"] == "video")
     if video["width"] != 1080 or video["height"] != 1920:
         raise ValueError("Рендер не прошёл проверку разрешения 1080×1920")
+    composer.extract_cover(output, output.with_suffix(".jpg"))
     return str(output.relative_to(settings.data_dir))
 
 
@@ -73,26 +77,55 @@ def process_job(job_id):
     result = {}
     next_job = None
     if job.kind == "script":
+        reference_evidence = {}
+
+        def persist_evidence(evidence):
+            reference_evidence["reference_evidence"] = evidence
+            with session() as db:
+                db.get(Job, job.id).result = dict(reference_evidence)
+
         result = None
-        if job.payload.get("pipeline"):
-            result = studio.prepare(project, job.payload["reference_id"], job.payload.get("feedback",""))
-        if result is None:
+        reference_id = job.payload.get("reference_id")
+        if topic := job.payload.get("topic"):
+            result = studio.prepare_topic(project, topic, job.payload["notes"], job.payload["hook_style"],
+                                          job.payload.get("feedback", ""))
+        elif reference_id:
+            result = studio.prepare(project, reference_id, job.payload.get("feedback", ""), persist_evidence)
+        if result is not None:
+            reference_evidence["script_strategy"] = "topic" if job.payload.get("topic") else "concept_rewrite"
+        else:
             result = agents.generate_script(project, job.payload.get("feedback", ""), job.payload.get("research", False), job.payload.get("reference_id"))
         with session() as db:
             stored = db.get(Project, project.id)
             if stored.script:
                 event(db, project.id, "script_version", script=stored.script)
             stored.script, stored.status = result, "script_review"
+        result = {**result, **reference_evidence}
     elif job.kind == "pipeline_video":
-        raw, output = studio.produce(project,job.id)
+        raw, output = studio.produce(project, job.id, job.payload.get("background_mode"),
+                                     job.payload.get("background", "default_studio"), job.payload.get("local_edit", False))
         duration = float(probe(settings.data_dir/raw)["format"]["duration"])
         with session() as db:
             stored = db.get(Project,project.id)
             stored.render_path, stored.status = output, "video_review"
+            if job.payload.get("background_mode"):
+                stored.script = {**stored.script, "pipeline_job_id": project.id}
             if not db.get(Asset,job.id):
                 db.add(Asset(id=job.id, project_id=project.id, name="HeyGen", kind="avatar",
                              path=raw,duration=duration))
-        result = {"path":output}
+        result = {"path": output, "local_edit": job.payload.get("local_edit", False)}
+    elif job.kind == "pipeline_edit":
+        output = studio.revise_edit(project, job.id, assets, job.payload.get("feedback", ""))
+        with session() as db:
+            stored = db.get(Project, project.id)
+            stored.render_path, stored.status = output, "video_review"
+        result = {"path": output}
+    elif job.kind == "pipeline_background":
+        output = studio.change_background(project, job.id, job.payload["background"])
+        with session() as db:
+            stored = db.get(Project, project.id)
+            stored.render_path, stored.status = output, "video_review"
+        result = {"path": output}
     elif job.kind == "analyze":
         with session() as db:
             asset = db.get(Asset, job.payload["asset_id"])

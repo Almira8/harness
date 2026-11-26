@@ -1,1 +1,11 @@
-{"studio_dark":{"type":"color","value":"#20352F"},"studio_light":{"type":"color","value":"#F4F1E8"}}
+{
+  "default_studio": {"type": "color", "value": "#20352F", "description": "Студия по умолчанию"},
+  "dark_minimal": {"type": "color", "value": "#18201E", "description": "Тёмный минимализм"},
+  "cozy_office": {"type": "color", "value": "#B59B82", "description": "Уютный офис"},
+  "studio_dark": {"type": "color", "value": "#20352F", "description": "Тёмная спокойная студия"},
+  "studio_light": {"type": "color", "value": "#F4F1E8", "description": "Светлый нейтральный фон"},
+  "modern_office": {"type": "color", "value": "#34475B", "description": "Холодный офисный тон"},
+  "minimal_beige": {"type": "color", "value": "#DCC9AF", "description": "Тёплый светлый минимализм"},
+  "tech_neon": {"type": "color", "value": "#5426A8", "description": "Насыщенный фиолетовый технологический акцент"},
+  "greenscreen": {"type": "color", "value": "#00FF00", "description": "Технический хромакей"}
+}

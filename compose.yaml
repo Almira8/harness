@@ -11,6 +11,7 @@ services:
     volumes:
       - ./data:/data
       - ./workspace:/app/workspace
+      - ./assets/backgrounds:/app/assets/backgrounds:ro
     depends_on:
       db:
         condition: service_healthy
@@ -26,6 +27,7 @@ services:
     volumes:
       - ./data:/data
       - ./workspace:/app/workspace
+      - ./assets/backgrounds:/app/assets/backgrounds:ro
       - ./remotion-studio/src:/app/remotion-studio/src:ro
     depends_on:
       db:

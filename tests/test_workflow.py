@@ -180,7 +180,7 @@ def test_selected_reference_is_analyzed_and_other_examples_are_excluded(api, mon
     identifier = project(api)
     monkeypatch.setattr(settings, "openai_api_key", "test-only")
     with session() as db:
-        db.add(Asset(id="source", name="sample", path="uploads/sample.mov", kind="reference", duration=12))
+        db.add(Asset(id="source", name="sample", path="uploads/sample.jpeg", kind="reference", duration=12))
         db.add_all([Reference(id="chosen", asset_id="source", notes="Монтаж"),
                     Reference(id="other", notes="Лимон")])
     received = {}
@@ -249,4 +249,192 @@ def test_unrelated_reference_drafts_are_withheld(api, monkeypatch):
     with pytest.raises(ValueError, match="дважды"):
         worker.agents.generate_script(stored, "", reference_id="montage")
     assert len(drafts) == 2
-    assert drafts[1]["required_corrections"] == "Верни демонстрацию склеек"
+    assert "Сохрани задачу, метод и результат" in drafts[1]["required_corrections"]
+    assert "Верни демонстрацию склеек" not in str(drafts[1])
+
+
+def test_revising_pipeline_edit_keeps_video_until_replacement(api, monkeypatch):
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    identifier = project(api)
+    with session() as db:
+        record = db.get(Project, identifier)
+        record.script = {**script(), "pipeline_job_id": identifier}
+        record.mode, record.status = "avatar", "video_review"
+        record.render_path = "renders/current.mp4"
+        db.add(Asset(id="avatar", project_id=identifier, name="HeyGen",
+                     kind="avatar", path="uploads/avatar.mp4", duration=10))
+    result = api.post(f"/api/projects/{identifier}/edit", json={
+        "feedback": "Убрать первую плашку", "auto_render": True,
+    })
+    assert result.status_code == 200
+    assert result.json()["kind"] == "pipeline_edit"
+    assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/current.mp4"
+
+    def revision(record, job_id, assets, feedback):
+        assert record.id == identifier
+        assert feedback == "Убрать первую плашку"
+        return "renders/revised.mp4"
+
+    monkeypatch.setattr(worker.studio, "revise_edit", revision)
+    worker.execute(worker.claim_job())
+    assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/revised.mp4"
+
+
+def test_video_script_exposes_concrete_screen_beats(api, monkeypatch, tmp_path):
+    from pipeline import studio
+    from pipeline.common import dump
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path)
+    with session() as db:
+        db.add(Asset(id="source", name="sample.mov", path="uploads/sample.mov", kind="reference", duration=10))
+        db.add(Reference(id="chosen", asset_id="source"))
+
+    (settings.data_dir / "uploads" / "sample.mov").write_bytes(b"fixture")
+    passes = []
+
+    def extract(source, directory):
+        passes.append("extract")
+        dump(directory / "1_extracted.json", {"transcript": [], "screen_text": [], "ocr_warning": None})
+
+    def analyze(directory):
+        passes.append("analyze")
+        dump(directory / "2_analysis.json", {"topic_and_tools": "Субтитры", "pain_and_hook": "Речь трудно разобрать",
+             "actionable_steps": ["Включить субтитры"], "visual_structure": "Перебивка"})
+
+    def write(directory, *args, **kwargs):
+        dump(directory / "3_script_plan.json", {
+            "title": "Субтитры", "caption": "", "music": {"asset": None, "volume": 0},
+            "subtitle_style": "minimal", "scenes": [{
+                "scene_id": 1, "spoken_text": "Включаем субтитры.",
+                "camera_framing": "closeup", "background_type": "color",
+                "background_prompt_or_asset": "studio_dark", "overlay_text": "Субтитры",
+                "b_roll_query": None, "screen_beats": [
+                    {"speech": "Включаем", "action": "Ведущая крупно, справа окно редактора.",
+                     "screen_text": "", "animation": ""},
+                    {"speech": "субтитры.", "action": "В редакторе видна дорожка субтитров.",
+                     "screen_text": "Субтитры", "animation": "Белая надпись плавно поднимается."},
+                ],
+            }],
+        })
+
+    monkeypatch.setattr(studio.extractor, "extract", extract)
+    monkeypatch.setattr(studio.analyzer, "analyze", analyze)
+    monkeypatch.setattr(studio.scriptwriter, "write", write)
+    identifier = project(api)
+    result = api.post(f"/api/projects/{identifier}/generate", json={"reference_id": "chosen"}).json()
+    assert not result["payload"].get("pipeline")
+    worker.execute(worker.claim_job())
+    saved = api.get(f"/api/projects/{identifier}").json()
+    assert saved["jobs"][0]["result"]["script_strategy"] == "concept_rewrite"
+    seconds = saved["script"]["seconds"]
+    rewritten = api.post("/api/studio/from-reference", params={"reference_id": "chosen"}).json()
+    worker.execute(worker.claim_job())
+    assert api.get(f"/api/projects/{rewritten['id']}").json()["status"] == "script_review"
+    assert passes == ["extract", "analyze"]
+    assert [second["second"] for second in seconds] == [0, 1]
+    assert seconds[0]["screen_text"] == ""
+    assert seconds[1] == {
+        "second": 1, "speech": "субтитры.", "action": "В редакторе видна дорожка субтитров.",
+        "screen_text": "Субтитры", "animation": "Белая надпись плавно поднимается.", "sound": "Голос",
+    }
+
+
+def test_studio_upload_routes_background_to_pipeline(api, monkeypatch):
+    from pipeline.common import ffmpeg
+
+    for key in ("openai_api_key", "heygen_api_key", "heygen_avatar_id", "heygen_voice_id"):
+        monkeypatch.setattr(settings, key, "test-only")
+    file = settings.data_dir / "work" / "background.png"
+    ffmpeg("-f", "lavfi", "-i", "color=s=64x96", "-frames:v", 1, "-threads", 1, file)
+    response = api.post("/api/assets", data={"kind": "background"},
+                        files={"file": ("room.png", file.read_bytes(), "image/png")})
+    assert response.status_code == 201
+    key = "upload:" + response.json()["id"]
+    assert any(item["id"] == key for item in api.get("/api/backgrounds").json())
+    identifier = project(api)
+    approve(api, identifier)
+    response = api.post(f"/api/projects/{identifier}/production", json={
+        "mode": "avatar", "auto_render": True, "background_mode": "preset", "background": key,
+    })
+    assert response.status_code == 200
+    job = api.get(f"/api/projects/{identifier}").json()["jobs"][0]
+    assert job["kind"] == "pipeline_video" and job["payload"]["background"] == key
+
+
+def test_background_swap_keeps_old_video_until_local_render_succeeds(api, monkeypatch, tmp_path):
+    from pipeline.common import dump
+
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path)
+    identifier = project(api)
+    with session() as db:
+        record = db.get(Project, identifier)
+        record.mode = "avatar"
+        record.status = "video_approved"
+        record.render_path = "renders/old.mp4"
+    directory = tmp_path / identifier
+    directory.mkdir()
+    dump(directory / "4_render.json", {"backgrounds": [{"kind": "color", "color": "#20352F"}]})
+    assert api.get(f"/api/projects/{identifier}").json()["can_change_background"]
+
+    def replace(record, job_id, preset):
+        assert preset == "dark_minimal"
+        return "renders/new.mp4"
+
+    monkeypatch.setattr(worker.studio, "change_background", replace)
+    response = api.post(f"/api/projects/{identifier}/background", json={"background": "dark_minimal"})
+    assert response.status_code == 200 and response.json()["kind"] == "pipeline_background"
+    assert api.get(f"/api/projects/{identifier}").json()["render_path"] == "renders/old.mp4"
+    worker.execute(worker.claim_job())
+    result = api.get(f"/api/projects/{identifier}").json()
+    assert result["status"] == "video_review" and result["render_path"] == "renders/new.mp4"
+
+
+def test_topic_route_can_choose_hook_and_save_approved_lines(api, monkeypatch, tmp_path):
+    from pipeline import studio
+    from schemas.pipeline import ScriptPlan
+
+    monkeypatch.setattr(settings, "openai_api_key", "test-only")
+    monkeypatch.setattr(settings, "pipeline_workspace", tmp_path)
+
+    def prepare(topic, notes, hook_style, *, directory, feedback):
+        assert (topic, notes, hook_style) == ("Субтитры", "Пример на рецепте", "mistake")
+        from pipeline.common import dump
+
+        dump(directory / "3_script_plan.json", ScriptPlan.model_validate({
+            "title": topic, "caption": "", "music": {"asset": None, "volume": 0},
+            "subtitle_style": "minimal", "selected_hook": 0, "cover_hook_text": "Где теряются слова в кадре",
+            "alternative_hooks": [
+                {"spoken_hook": "Смотри на экран.", "cover_hook_text": "Где теряются слова в кадре"},
+                {"spoken_hook": "Ты добавляешь титры вручную?", "cover_hook_text": "Твоя речь пропадает без титров"},
+                {"spoken_hook": "В ролике пропал звук?", "cover_hook_text": "Как сохранить речь без звука"},
+            ],
+            "scenes": [{"scene_id": 1, "spoken_text": "Смотри на экран. Добавим дорожку.",
+                        "camera_framing": "closeup", "background_type": "color",
+                        "background_prompt_or_asset": "studio_dark", "overlay_text": None, "b_roll_query": None}],
+        }).model_dump())
+
+    monkeypatch.setattr(studio.scriptwriter, "generate_from_topic", prepare)
+    monkeypatch.setattr(studio.extractor, "extract", lambda *_: pytest.fail("Extracted a reference"))
+    monkeypatch.setattr(studio.analyzer, "analyze", lambda *_: pytest.fail("Analyzed a reference"))
+    result = api.post("/api/studio/from-topic", json={
+        "topic": "Субтитры", "notes": "Пример на рецепте", "hook_style": "mistake",
+    })
+    identifier = result.json()["id"]
+    worker.execute(worker.claim_job())
+    saved = api.get(f"/api/projects/{identifier}").json()
+    assert saved["jobs"][0]["result"]["script_strategy"] == "topic"
+    assert len(saved["script"]["alternative_hooks"]) == 3
+    response = api.post(f"/api/projects/{identifier}/script-review", json={
+        "cover_hook_text": "Твоя речь пропадает без титров",
+        "scenes": ["Ты добавляешь титры вручную? Добавим дорожку."],
+        "selected_hook": 1,
+    })
+    assert response.status_code == 200
+    assert api.post(f"/api/projects/{identifier}/approve-script").status_code == 200
+    with session() as db:
+        record = db.get(Project, identifier)
+        approved = studio.approved_plan(record, tmp_path / identifier)
+    assert approved.selected_hook == 1
+    assert approved.cover_hook_text == "Твоя речь пропадает без титров"
+    assert approved.scenes[0].spoken_text.startswith("Ты добавляешь титры вручную?")
